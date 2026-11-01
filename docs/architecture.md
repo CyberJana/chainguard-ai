@@ -11,7 +11,7 @@ This document defines the target boundaries for phased implementation. It does n
 - **PostgreSQL:** Authoritative store for organizations, users, normalized blockchain observations, risk assessments, alerts, investigations, evidence metadata, and audit events. Tenant identity must be included in access paths and protected by server-side checks; PostgreSQL row-level security may be added as defense in depth.
 - **Redis and workers:** Redis is a queue/cache dependency, not the source of truth. Background processing must be idempotent and safe to retry.
 - **Blockchain adapters:** Provider-specific code normalizes public observations into a provider-independent representation and retains provider, network, source timestamp, and retrieval provenance.
-- **Risk analysis:** Deterministic rules and versioned ML inference produce bounded triage scores and explanations. The system must retain the model/rule version and must not imply that risk equals proven wrongdoing.
+- **Risk analysis:** Deterministic rules and versioned ML inference produce bounded triage scores and explanations. The system must retain the model/rule version and must not imply that risk equals proven wrongdoing. An offline Isolation Forest training/evaluation utility exists, but no real dataset has been trained, its artifact is not loaded by API inference, and no score calibration is claimed.
 - **Optional graph store:** Derived graph projections only. PostgreSQL remains authoritative, and graph results must be traceable to source observations.
 - **External intelligence:** Integrations are allowlisted/configured, attributed to source, licensed or otherwise permitted, and timestamped with confidence and expiry metadata.
 

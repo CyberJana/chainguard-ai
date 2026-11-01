@@ -47,6 +47,36 @@ class TransactionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class BitcoinAddressStatsResponse(BaseModel):
+    funded_txo_count: int
+    funded_txo_sum: int
+    spent_txo_count: int
+    spent_txo_sum: int
+    tx_count: int
+
+
+class BitcoinAddressTransactionResponse(BaseModel):
+    txid: str
+    block_height: int | None
+    block_hash: str | None
+    block_time: datetime | None
+    is_confirmed: bool | None
+    fee_satoshis: int
+    input_count: int
+    output_count: int
+    output_total_satoshis: int
+
+
+class BitcoinAddressHistoryResponse(BaseModel):
+    address: str
+    chain_stats: BitcoinAddressStatsResponse
+    mempool_stats: BitcoinAddressStatsResponse
+    transactions: list[BitcoinAddressTransactionResponse]
+    next_cursor: str | None
+    source: str
+    retrieved_at: datetime
+
+
 class RiskResponse(BaseModel):
     id: int
     transaction_id: int

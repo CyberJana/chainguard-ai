@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Download, FileCheck2, FilePlus2, FileText, ShieldCheck } from "lucide-react";
+import { ArrowLeft, Download, FileCheck2, FilePlus2, FileSpreadsheet, FileText, ShieldCheck } from "lucide-react";
 import { ApiError, api, errorMessage } from "@/lib/api";
 import type { ChangeEvent, FormEvent } from "react";
 
@@ -86,9 +86,9 @@ export default function CaseDetailPage() {
     }
   }
 
-  async function exportReport() {
+  async function exportReport(format: "json" | "csv") {
     try {
-      const response = await fetch(`/api/proxy/cases/${caseId}/report`, { credentials: "same-origin" });
+      const response = await fetch(`/api/proxy/cases/${caseId}/report${format === "csv" ? ".csv" : ""}`, { credentials: "same-origin" });
       if (!response.ok) {
         const result = await response.json() as { detail?: string };
         throw new Error(result.detail ?? `Report export failed (${response.status})`);
@@ -97,12 +97,12 @@ export default function CaseDetailPage() {
       const url = URL.createObjectURL(report);
       const link = document.createElement("a");
       link.href = url;
-      link.download = `case-${caseId}-report.json`;
+      link.download = `case-${caseId}-report.${format}`;
       document.body.append(link);
       link.click();
       link.remove();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setNotice("JSON case report exported.");
+      setNotice(`${format.toUpperCase()} case report exported.`);
     } catch (error) {
       setNotice(errorMessage(error));
     }
@@ -126,9 +126,10 @@ export default function CaseDetailPage() {
           <h1 className="mt-2 text-3xl font-semibold">{currentCase.title}</h1>
           <p className="mt-2 text-sm text-slate-400">{currentCase.description || "No case description provided."}</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <span className="rounded-full border border-sky-400/20 bg-sky-400/10 px-3 py-1.5 text-xs text-sky-200">{currentCase.status.replace("_", " ")}</span>
-          <button type="button" className="button secondary" onClick={exportReport}><Download size={15} />Export JSON report</button>
+          <button type="button" className="button secondary" onClick={() => exportReport("json")}><Download size={15} />Export JSON report</button>
+          <button type="button" className="button secondary" onClick={() => exportReport("csv")}><FileSpreadsheet size={15} />Export CSV report</button>
         </div>
       </header>
 

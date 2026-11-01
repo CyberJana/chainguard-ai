@@ -1,4 +1,6 @@
+import csv
 import hashlib
+import io
 import json
 import re
 import uuid
@@ -6,7 +8,7 @@ from pathlib import Path, PurePosixPath
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy import select
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
@@ -31,6 +33,33 @@ router = APIRouter(prefix="/api/v1/cases", tags=["investigations"])
 DbSession = Annotated[Session, Depends(get_db)]
 MAX_EVIDENCE_BYTES = 10 * 1024 * 1024
 SAFE_FILENAME = re.compile(r"[\x00-\x1f\x7f]")
+CSV_FORMULA_PREFIX = re.compile(r"^\s*[=+\-@]")
+CASE_REPORT_CSV_COLUMNS = (
+    "record_type",
+    "case_id",
+    "case_title",
+    "case_description",
+    "case_status",
+    "case_created_at",
+    "methodology",
+    "findings",
+    "limitations",
+    "network",
+    "txid",
+    "source",
+    "observed_at",
+    "raw_observation",
+    "user_id",
+    "content",
+    "filename",
+    "sha256",
+    "byte_size",
+    "source_provenance",
+    "event_type",
+    "details",
+    "evidence_id",
+    "action",
+)
 
 
 def get_case(db: Session, case_id: int, organization_id: int) -> InvestigationCase:
@@ -184,8 +213,7 @@ def create_note(case_id: int, payload: NoteCreate, user: CurrentUser, db: DbSess
     return {"id": note.id}
 
 
-@router.get("/{case_id}/report")
-def export_case_report(case_id: int, user: CurrentUser, db: DbSession) -> dict:
+def build_case_report(case_id: int, user: User, db: Session) -> dict:
     case = get_case(db, case_id, user.organization_id)
     transactions = list(
         db.scalars(
@@ -230,8 +258,6 @@ def export_case_report(case_id: int, user: CurrentUser, db: DbSession) -> dict:
         if evidence
         else []
     )
-    db.add(AuditLog(organization_id=user.organization_id, user_id=user.id, event_type="case.report_exported", details=f"case_id={case.id}"))
-    db.commit()
     return {
         "case": {
             "id": case.id,
@@ -261,6 +287,118 @@ def export_case_report(case_id: int, user: CurrentUser, db: DbSession) -> dict:
             for event in custody_events
         ],
     }
+
+
+def audit_case_report_export(case_id: int, user: User, db: Session, file_format: str) -> None:
+    db.add(
+        AuditLog(
+            organization_id=user.organization_id,
+            user_id=user.id,
+            event_type="case.report_exported",
+            details=f"case_id={case_id}; format={file_format}",
+        )
+    )
+    db.commit()
+
+
+def spreadsheet_safe_cell(value: object) -> object:
+    if isinstance(value, str) and CSV_FORMULA_PREFIX.match(value):
+        return f"'{value}"
+    return value
+
+
+@router.get("/{case_id}/report")
+def export_case_report(case_id: int, user: CurrentUser, db: DbSession) -> dict:
+    report = build_case_report(case_id, user, db)
+    audit_case_report_export(case_id, user, db, "json")
+    return report
+
+
+@router.get("/{case_id}/report.csv")
+def export_case_report_csv(case_id: int, user: CurrentUser, db: DbSession) -> Response:
+    report = build_case_report(case_id, user, db)
+    case = report["case"]
+    common = {
+        "case_id": case["id"],
+        "case_title": case["title"],
+        "case_description": case["description"],
+        "case_status": case["status"],
+        "case_created_at": case["created_at"].isoformat(),
+        "methodology": report["methodology"],
+        "findings": report["findings"],
+        "limitations": json.dumps(report["limitations"], ensure_ascii=False),
+    }
+    rows = [{"record_type": "case", **common}]
+    rows.extend(
+        {
+            "record_type": "transaction",
+            **common,
+            "network": transaction["network"],
+            "txid": transaction["txid"],
+            "source": transaction["source"],
+            "observed_at": transaction["observed_at"].isoformat(),
+            "raw_observation": json.dumps(transaction["raw_observation"], sort_keys=True, ensure_ascii=False),
+        }
+        for transaction in report["transactions"]
+    )
+    rows.extend(
+        {
+            "record_type": "note",
+            **common,
+            "user_id": note["user_id"],
+            "content": note["content"],
+            "observed_at": note["created_at"].isoformat(),
+        }
+        for note in report["notes"]
+    )
+    rows.extend(
+        {
+            "record_type": "evidence",
+            **common,
+            "filename": item["filename"],
+            "sha256": item["sha256"],
+            "byte_size": item["byte_size"],
+            "source_provenance": item["source_provenance"],
+        }
+        for item in report["evidence"]
+    )
+    rows.extend(
+        {
+            "record_type": "activity",
+            **common,
+            "user_id": event["user_id"],
+            "event_type": event["event_type"],
+            "details": event["details"],
+            "observed_at": event["created_at"].isoformat(),
+        }
+        for event in report["activity"]
+    )
+    rows.extend(
+        {
+            "record_type": "chain_of_custody",
+            **common,
+            "evidence_id": event["evidence_id"],
+            "user_id": event["user_id"],
+            "action": event["action"],
+            "details": event["details"],
+            "observed_at": event["created_at"].isoformat(),
+        }
+        for event in report["chain_of_custody"]
+    )
+
+    output = io.StringIO(newline="")
+    writer = csv.DictWriter(output, fieldnames=CASE_REPORT_CSV_COLUMNS, extrasaction="ignore", lineterminator="\r\n")
+    writer.writeheader()
+    writer.writerows(
+        {key: spreadsheet_safe_cell(value) for key, value in row.items()}
+        for row in rows
+    )
+    audit_case_report_export(case_id, user, db, "csv")
+    return Response(
+        content=output.getvalue(),
+        media_type="text/csv",
+        headers={"Content-Disposition": f'attachment; filename="case-{case_id}-report.csv"'},
+    )
 
 
 @router.post("/{case_id}/evidence", status_code=201)

@@ -1,3 +1,5 @@
+import csv
+import io
 from collections.abc import Generator
 from datetime import datetime, timezone
 
@@ -426,6 +428,101 @@ def test_case_and_evidence_are_tenant_scoped_and_integrity_checked(client: TestC
         headers={"Authorization": f"Bearer {owner_token}"},
     ).status_code == 409
     assert client.get("/api/v1/alerts", headers={"Authorization": f"Bearer {other_token}"}).json() == []
+
+
+def test_case_csv_report_contains_provenance_and_escapes_spreadsheet_formulas(client: TestClient) -> None:
+    headers = {"Authorization": f"Bearer {token_for(client)}"}
+    created_case = client.post(
+        "/api/v1/cases",
+        json={"title": "=2+2", "description": "CSV export test"},
+        headers=headers,
+    )
+    assert created_case.status_code == 201
+    case_id = created_case.json()["id"]
+
+    with TestSession.begin() as db:
+        transaction = BlockchainTransaction(
+            network="bitcoin",
+            txid="c" * 64,
+            raw_observation={"txid": "c" * 64, "status": {"confirmed": False}},
+            source="test-provider",
+        )
+        db.add(transaction)
+        db.flush()
+        transaction_id = transaction.id
+
+    linked = client.post(
+        f"/api/v1/cases/{case_id}/transactions",
+        json={"transaction_id": transaction_id},
+        headers=headers,
+    )
+    assert linked.status_code == 201
+    note = client.post(
+        f"/api/v1/cases/{case_id}/notes",
+        json={"content": '=HYPERLINK("https://example.test","open")'},
+        headers=headers,
+    )
+    assert note.status_code == 201
+    evidence = client.post(
+        f"/api/v1/cases/{case_id}/evidence",
+        data={"source_provenance": "Provider export captured for report."},
+        files={"file": ("source.txt", b"evidence", "text/plain")},
+        headers=headers,
+    )
+    assert evidence.status_code == 201
+
+    response = client.get(f"/api/v1/cases/{case_id}/report.csv", headers=headers)
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/csv")
+    assert response.headers["content-disposition"] == f'attachment; filename="case-{case_id}-report.csv"'
+    rows = list(csv.DictReader(io.StringIO(response.text)))
+    assert {row["record_type"] for row in rows} == {
+        "case",
+        "transaction",
+        "note",
+        "evidence",
+        "activity",
+        "chain_of_custody",
+    }
+    case_row = next(row for row in rows if row["record_type"] == "case")
+    assert case_row["case_title"] == "'=2+2"
+    transaction_row = next(row for row in rows if row["record_type"] == "transaction")
+    assert transaction_row["txid"] == "c" * 64
+    assert transaction_row["source"] == "test-provider"
+    assert '"confirmed": false' in transaction_row["raw_observation"]
+    note_row = next(row for row in rows if row["record_type"] == "note")
+    assert note_row["content"].startswith("'=")
+    evidence_row = next(row for row in rows if row["record_type"] == "evidence")
+    assert evidence_row["sha256"] == evidence.json()["sha256"]
+    assert evidence_row["source_provenance"] == "Provider export captured for report."
+    assert any(row["record_type"] == "chain_of_custody" and row["action"] == "uploaded" for row in rows)
+    with TestSession() as db:
+        export_audit = db.scalar(
+            select(AuditLog).where(
+                AuditLog.event_type == "case.report_exported",
+                AuditLog.details == f"case_id={case_id}; format=csv",
+            )
+        )
+        assert export_audit is not None
+
+    with TestSession.begin() as db:
+        other_org = Organization(name="CSV Other Org")
+        db.add(other_org)
+        db.flush()
+        db.add(
+            User(
+                organization_id=other_org.id,
+                email="csv-other@example.com",
+                password_hash=hash_password(PASSWORD),
+                role=Role.ANALYST.value,
+            )
+        )
+    other_token = token_for(client, "csv-other@example.com")
+    denied = client.get(
+        f"/api/v1/cases/{case_id}/report.csv",
+        headers={"Authorization": f"Bearer {other_token}"},
+    )
+    assert denied.status_code == 404
 
 
 def test_unassigned_alert_update_rejects_cross_tenant_user(client: TestClient) -> None:

@@ -1,4 +1,5 @@
 import re
+from dataclasses import asdict
 from datetime import datetime, timezone
 from typing import Annotated
 
@@ -9,8 +10,8 @@ from sqlalchemy.orm import Session
 from app.database import get_db
 from app.dependencies import CurrentUser
 from app.models import Alert, AuditLog, BlockchainTransaction, RiskAssessment
-from app.schemas import RiskRequest, RiskResponse, TransactionResponse
-from app.services.bitcoin import ingest_bitcoin_transaction
+from app.schemas import BitcoinAddressHistoryResponse, RiskRequest, RiskResponse, TransactionResponse
+from app.services.bitcoin import fetch_bitcoin_address_history, ingest_bitcoin_transaction
 from app.services.risk import MODEL_VERSION, assess_bitcoin_transaction
 
 router = APIRouter(prefix="/api/v1", tags=["blockchain"])
@@ -52,6 +53,26 @@ def lookup_bitcoin_transaction(txid: str, user: CurrentUser, db: DbSession) -> B
     db.commit()
     db.refresh(transaction)
     return transaction
+
+
+@router.get("/addresses/bitcoin/{address}", response_model=BitcoinAddressHistoryResponse)
+def lookup_bitcoin_address(
+    address: str,
+    user: CurrentUser,
+    db: DbSession,
+    cursor: Annotated[str | None, Query(pattern=r"^[0-9a-fA-F]{64}$")] = None,
+) -> BitcoinAddressHistoryResponse:
+    history = fetch_bitcoin_address_history(address, cursor)
+    db.add(
+        AuditLog(
+            organization_id=user.organization_id,
+            user_id=user.id,
+            event_type="address.lookup",
+            details=f"bitcoin:{history.address}; source={history.source}",
+        )
+    )
+    db.commit()
+    return BitcoinAddressHistoryResponse.model_validate(asdict(history))
 
 
 @router.post("/risk/analyze", response_model=RiskResponse)

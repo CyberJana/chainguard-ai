@@ -1,6 +1,8 @@
 from collections.abc import Generator
+from datetime import datetime, timezone
 
 import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -10,6 +12,7 @@ from app.database import get_db
 from app.main import app
 from app.models import (
     Alert,
+    AuditLog,
     Base,
     BlockchainTransaction,
     EvidenceItem,
@@ -20,7 +23,13 @@ from app.models import (
 )
 from app.config import Settings
 from app.security import hash_password
-from app.services.bitcoin import ingest_bitcoin_transaction, normalize_bitcoin_transaction
+from app.services.bitcoin import (
+    BitcoinAddressHistory,
+    BitcoinAddressStats,
+    ingest_bitcoin_transaction,
+    normalize_bitcoin_address_history,
+    normalize_bitcoin_transaction,
+)
 from app.services.risk import assess_bitcoin_transaction
 
 engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
@@ -84,6 +93,137 @@ def test_bitcoin_normalization_rejects_mismatched_hash_and_invalid_value() -> No
         normalize_bitcoin_transaction("a" * 64, {"txid": "b" * 64, "fee": 0, "vin": [], "vout": [], "status": {}})
     with pytest.raises(ValueError):
         normalize_bitcoin_transaction("a" * 64, {"txid": "a" * 64, "fee": 0, "vin": [], "vout": [{"value": -1}], "status": {}})
+
+
+def test_bitcoin_address_history_normalizes_page_and_rejects_provider_mismatch() -> None:
+    address = "1BoatSLRHtKNngkdXEeobR76b53LETtpyT"
+    txid = "9" * 64
+    stats = {
+        "funded_txo_count": 2,
+        "funded_txo_sum": 1_000,
+        "spent_txo_count": 1,
+        "spent_txo_sum": 500,
+        "tx_count": 2,
+    }
+    summary = {"address": address, "chain_stats": stats, "mempool_stats": {key: 0 for key in stats}}
+    transaction = {
+        "txid": txid,
+        "fee": 100,
+        "vin": [{"txid": "a" * 64}],
+        "vout": [{"value": 500, "scriptpubkey_address": address}],
+        "status": {"confirmed": True, "block_height": 100},
+    }
+    chain_stats, mempool_stats, transactions = normalize_bitcoin_address_history(
+        address, summary, [transaction]
+    )
+    assert chain_stats.tx_count == 2
+    assert mempool_stats.tx_count == 0
+    assert transactions[0].txid == txid
+    with pytest.raises(ValueError):
+        normalize_bitcoin_address_history("1wrong", summary, [transaction])
+    with pytest.raises(ValueError):
+        normalize_bitcoin_address_history(
+            address, summary, [{**transaction, "fee": -1}]
+        )
+    with pytest.raises(ValueError):
+        normalize_bitcoin_address_history(
+            address,
+            summary,
+            [{**transaction, "vout": [{"value": 500, "scriptpubkey_address": "1unrelated"}]}],
+        )
+
+
+def test_bitcoin_address_history_fetches_summary_and_cursor_page(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+    import app.services.bitcoin as bitcoin
+
+    address = "1BoatSLRHtKNngkdXEeobR76b53LETtpyT"
+    cursor = "f" * 64
+    stats = {
+        "funded_txo_count": 1,
+        "funded_txo_sum": 500,
+        "spent_txo_count": 0,
+        "spent_txo_sum": 0,
+        "tx_count": 1,
+    }
+    summary = {"address": address, "chain_stats": stats, "mempool_stats": stats}
+    txs = [
+        {
+            "txid": f"{index:064x}",
+            "fee": 100,
+            "vin": [{"prevout": {"scriptpubkey_address": address}}],
+            "vout": [{"value": 500}],
+            "status": {"confirmed": True, "block_height": index + 1},
+        }
+        for index in range(25)
+    ]
+    requested_urls = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def __init__(self, payload: object) -> None:
+            self.content = json.dumps(payload).encode()
+            self.headers = {"content-length": str(len(self.content))}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return None
+
+        def iter_bytes(self):
+            return iter((self.content,))
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return None
+
+        def stream(self, method: str, url: str, headers: dict) -> FakeResponse:
+            requested_urls.append(url)
+            return FakeResponse(summary if url.endswith(f"/address/{address}") else txs)
+
+    monkeypatch.setattr(bitcoin.httpx, "Client", FakeClient)
+    result = bitcoin.fetch_bitcoin_address_history(address, cursor)
+    assert len(result.transactions) == 25
+    assert result.next_cursor == txs[-1]["txid"]
+    assert requested_urls[1].endswith(f"/address/{address}/txs/chain/{cursor}")
+    with pytest.raises(HTTPException) as error:
+        bitcoin.fetch_bitcoin_address_history("not-a-bitcoin-address")
+    assert error.value.status_code == 422
+
+
+def test_bitcoin_address_lookup_returns_provider_history_and_audits(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.routes.transactions as transaction_routes
+
+    address = "1BoatSLRHtKNngkdXEeobR76b53LETtpyT"
+    result = BitcoinAddressHistory(
+        address=address,
+        chain_stats=BitcoinAddressStats(2, 1_000, 1, 500, 2),
+        mempool_stats=BitcoinAddressStats(0, 0, 0, 0, 0),
+        transactions=(),
+        next_cursor=None,
+        source="provider.example",
+        retrieved_at=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr(transaction_routes, "fetch_bitcoin_address_history", lambda requested, cursor: result)
+    response = client.get(
+        f"/api/v1/addresses/bitcoin/{address}",
+        headers={"Authorization": f"Bearer {token_for(client)}"},
+    )
+    assert response.status_code == 200
+    assert response.json()["address"] == address
+    assert response.json()["chain_stats"]["tx_count"] == 2
+    with TestSession() as db:
+        audit = db.scalar(select(AuditLog).where(AuditLog.event_type == "address.lookup"))
+        assert audit is not None
+        assert audit.details == f"bitcoin:{address}; source=provider.example"
 
 
 def test_ingestion_deduplicates_and_preserves_changed_provider_observations(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -16,7 +16,11 @@ from app.config import settings
 from app.models import BlockchainTransaction, TransactionObservation
 
 TXID_PATTERN = re.compile(r"^[0-9a-fA-F]{64}$")
+BITCOIN_ADDRESS_PATTERN = re.compile(
+    r"^(?:[13][1-9A-HJ-NP-Za-km-z]{25,34}|bc1[ac-hj-np-z02-9]{11,71})$"
+)
 MAX_PROVIDER_RESPONSE_BYTES = 2 * 1024 * 1024
+ADDRESS_HISTORY_PAGE_SIZE = 25
 
 
 @dataclass(frozen=True)
@@ -30,6 +34,75 @@ class NormalizedBitcoinTransaction:
     input_count: int
     output_count: int
     output_total_satoshis: int
+
+
+@dataclass(frozen=True)
+class BitcoinAddressStats:
+    funded_txo_count: int
+    funded_txo_sum: int
+    spent_txo_count: int
+    spent_txo_sum: int
+    tx_count: int
+
+
+@dataclass(frozen=True)
+class BitcoinAddressHistory:
+    address: str
+    chain_stats: BitcoinAddressStats
+    mempool_stats: BitcoinAddressStats
+    transactions: tuple[NormalizedBitcoinTransaction, ...]
+    next_cursor: str | None
+    source: str
+    retrieved_at: datetime
+
+
+def _normalize_address_stats(value: Any) -> BitcoinAddressStats:
+    if not isinstance(value, dict):
+        raise ValueError("Provider address statistics have an invalid shape.")
+    fields = ("funded_txo_count", "funded_txo_sum", "spent_txo_count", "spent_txo_sum", "tx_count")
+    if any(type(value.get(field)) is not int or value[field] < 0 for field in fields):
+        raise ValueError("Provider address statistics are invalid.")
+    return BitcoinAddressStats(**{field: value[field] for field in fields})
+
+
+def normalize_bitcoin_address_history(
+    address: str,
+    summary: Any,
+    transactions: Any,
+) -> tuple[BitcoinAddressStats, BitcoinAddressStats, tuple[NormalizedBitcoinTransaction, ...]]:
+    if not isinstance(summary, dict) or summary.get("address") != address:
+        raise ValueError("Provider address did not match the requested address.")
+    chain_stats = _normalize_address_stats(summary.get("chain_stats"))
+    mempool_stats = _normalize_address_stats(summary.get("mempool_stats"))
+    if not isinstance(transactions, list) or len(transactions) > ADDRESS_HISTORY_PAGE_SIZE:
+        raise ValueError("Provider address history has an invalid shape.")
+
+    normalized_transactions = []
+    seen_txids: set[str] = set()
+    for payload in transactions:
+        if not isinstance(payload, dict) or not isinstance(payload.get("txid"), str):
+            raise ValueError("Provider address history contains an invalid transaction.")
+        txid = payload["txid"]
+        if not TXID_PATTERN.fullmatch(txid) or txid.lower() in seen_txids:
+            raise ValueError("Provider address history contains an invalid or duplicate transaction.")
+        inputs = payload.get("vin")
+        outputs = payload.get("vout")
+        if not isinstance(inputs, list) or not isinstance(outputs, list):
+            raise ValueError("Provider address history contains an invalid transaction.")
+        references_address = any(
+            isinstance(item, dict)
+            and isinstance(item.get("prevout"), dict)
+            and item["prevout"].get("scriptpubkey_address") == address
+            for item in inputs
+        ) or any(
+            isinstance(item, dict) and item.get("scriptpubkey_address") == address
+            for item in outputs
+        )
+        if not references_address:
+            raise ValueError("Provider address history contains a transaction unrelated to the requested address.")
+        normalized_transactions.append(normalize_bitcoin_transaction(txid, payload))
+        seen_txids.add(txid.lower())
+    return chain_stats, mempool_stats, tuple(normalized_transactions)
 
 
 def normalize_bitcoin_transaction(txid: str, payload: Any) -> NormalizedBitcoinTransaction:
@@ -123,6 +196,86 @@ def fetch_bitcoin_transaction(txid: str) -> tuple[dict, str]:
 
     hostname = urlparse(settings.bitcoin_provider_base_url).hostname or "configured-provider"
     return payload, hostname
+
+
+def fetch_bitcoin_address_history(address: str, cursor: str | None = None) -> BitcoinAddressHistory:
+    if not BITCOIN_ADDRESS_PATTERN.fullmatch(address):
+        raise HTTPException(status_code=422, detail="Invalid Bitcoin address")
+    if cursor is not None and not TXID_PATTERN.fullmatch(cursor):
+        raise HTTPException(status_code=422, detail="Invalid address history cursor")
+
+    encoded_address = quote(address, safe="")
+    summary_url = f"{settings.bitcoin_provider_base_url}/address/{encoded_address}"
+    history_path = f"/address/{encoded_address}/txs"
+    if cursor is not None:
+        history_path += f"/chain/{quote(cursor.lower(), safe='')}"
+
+    def request_json(url: str, *, missing_detail: str, invalid_detail: str | None = None) -> Any:
+        try:
+            with httpx.Client(timeout=settings.bitcoin_provider_timeout_seconds, follow_redirects=False) as client:
+                with client.stream("GET", url, headers={"Accept": "application/json"}) as response:
+                    if response.status_code == 404:
+                        raise HTTPException(status_code=404, detail=missing_detail)
+                    if response.status_code == 400 and invalid_detail is not None:
+                        raise HTTPException(status_code=422, detail=invalid_detail)
+                    if response.status_code != 200:
+                        raise HTTPException(status_code=502, detail="Configured blockchain provider returned an error")
+                    content_length = response.headers.get("content-length")
+                    if content_length:
+                        try:
+                            if int(content_length) > MAX_PROVIDER_RESPONSE_BYTES:
+                                raise HTTPException(status_code=502, detail="Configured blockchain provider response was too large")
+                        except ValueError as exc:
+                            raise HTTPException(status_code=502, detail="Configured blockchain provider returned invalid headers") from exc
+                    chunks: list[bytes] = []
+                    total_size = 0
+                    for chunk in response.iter_bytes():
+                        total_size += len(chunk)
+                        if total_size > MAX_PROVIDER_RESPONSE_BYTES:
+                            raise HTTPException(status_code=502, detail="Configured blockchain provider response was too large")
+                        chunks.append(chunk)
+        except HTTPException:
+            raise
+        except httpx.TransportError as exc:
+            raise HTTPException(status_code=502, detail="Configured blockchain provider is unavailable") from exc
+        try:
+            return json.loads(b"".join(chunks))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            raise HTTPException(status_code=502, detail="Configured blockchain provider returned invalid data") from exc
+
+    summary = request_json(
+        summary_url,
+        missing_detail="Bitcoin address not found by configured provider",
+        invalid_detail="Invalid Bitcoin address",
+    )
+    transactions = request_json(
+        f"{settings.bitcoin_provider_base_url}{history_path}",
+        missing_detail="Bitcoin address history not found by configured provider",
+    )
+    try:
+        chain_stats, mempool_stats, normalized_transactions = normalize_bitcoin_address_history(
+            address, summary, transactions
+        )
+    except (ValueError, OverflowError) as exc:
+        raise HTTPException(status_code=502, detail="Configured blockchain provider returned invalid address data") from exc
+    if cursor is not None and any(item.txid == cursor.lower() for item in normalized_transactions):
+        raise HTTPException(status_code=502, detail="Configured blockchain provider returned a repeated address history page")
+
+    hostname = urlparse(settings.bitcoin_provider_base_url).hostname or "configured-provider"
+    next_cursor = (
+        normalized_transactions[-1].txid
+        if len(normalized_transactions) == ADDRESS_HISTORY_PAGE_SIZE
+        else None
+    )
+    return BitcoinAddressHistory(
+        address=address,
+        chain_stats=chain_stats,
+        mempool_stats=mempool_stats,
+        transactions=normalized_transactions,
+        next_cursor=next_cursor,
+        source=hostname,
+        retrieved_at=datetime.now(timezone.utc),
+    )
 
 
 def ingest_bitcoin_transaction(db: Session, txid: str) -> BlockchainTransaction:

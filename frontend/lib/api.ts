@@ -32,6 +32,32 @@ export type Transaction = {
   observed_at: string;
 };
 
+export type BitcoinAddressStats = {
+  funded_txo_count: number;
+  funded_txo_sum: number;
+  spent_txo_count: number;
+  spent_txo_sum: number;
+  tx_count: number;
+};
+
+export type BitcoinAddressHistory = {
+  address: string;
+  chain_stats: BitcoinAddressStats;
+  mempool_stats: BitcoinAddressStats;
+  transactions: {
+    txid: string;
+    block_height: number | null;
+    is_confirmed: boolean | null;
+    fee_satoshis: number;
+    input_count: number;
+    output_count: number;
+    output_total_satoshis: number;
+  }[];
+  next_cursor: string | null;
+  source: string;
+  retrieved_at: string;
+};
+
 export type RiskAssessment = {
   id: number;
   transaction_id: number;
@@ -75,6 +101,12 @@ export const api = {
   transactions: () => request<Transaction[]>("/api/proxy/transactions?limit=20"),
   lookupTransaction: (txid: string) =>
     request<Transaction>(`/api/proxy/transactions/bitcoin/${encodeURIComponent(txid)}`),
+  lookupBitcoinAddress: (address: string, cursor?: string) => {
+    const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+    return request<BitcoinAddressHistory>(
+      `/api/proxy/addresses/bitcoin/${encodeURIComponent(address)}${query}`,
+    );
+  },
   analyze: (txid: string) =>
     request<RiskAssessment>("/api/proxy/risk/analyze", { method: "POST", body: JSON.stringify({ txid }) }),
   createCase: (title: string) =>

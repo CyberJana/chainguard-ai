@@ -10,7 +10,7 @@ import {
 import {
   Cell, Pie, PieChart, ResponsiveContainer, Tooltip,
 } from "recharts";
-import { Alert, ApiError, api, CaseRecord, errorMessage, RiskAssessment, Transaction } from "@/lib/api";
+import { Alert, ApiError, api, BitcoinAddressHistory, CaseRecord, errorMessage, RiskAssessment, Transaction } from "@/lib/api";
 import type { FormEvent, ReactNode } from "react";
 
 const PIE_COLORS: Record<Alert["severity"], string> = {
@@ -42,6 +42,8 @@ export default function DashboardPage() {
   const queryClient = useQueryClient();
   const [txid, setTxid] = useState("");
   const [transaction, setTransaction] = useState<Transaction | null>(null);
+  const [address, setAddress] = useState("");
+  const [addressHistory, setAddressHistory] = useState<BitcoinAddressHistory | null>(null);
   const [risk, setRisk] = useState<RiskAssessment | null>(null);
   const [caseTitle, setCaseTitle] = useState("");
   const [notice, setNotice] = useState("");
@@ -61,6 +63,19 @@ export default function DashboardPage() {
       setRisk(null);
       setNotice("");
       void queryClient.invalidateQueries({ queryKey: ["transactions"] });
+    },
+    onError: (error) => setNotice(errorMessage(error)),
+  });
+  const lookupAddress = useMutation({
+    mutationFn: ({ address: requestedAddress, cursor }: { address: string; cursor?: string }) =>
+      api.lookupBitcoinAddress(requestedAddress, cursor),
+    onSuccess: (result, variables) => {
+      setAddressHistory((previous) =>
+        variables.cursor && previous?.address === result.address
+          ? { ...result, transactions: [...previous.transactions, ...result.transactions] }
+          : result,
+      );
+      setNotice("");
     },
     onError: (error) => setNotice(errorMessage(error)),
   });
@@ -111,6 +126,13 @@ export default function DashboardPage() {
     if (caseTitle.trim()) addCase.mutate(caseTitle.trim());
   }
 
+  async function submitAddressLookup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setNotice("");
+    setAddressHistory(null);
+    lookupAddress.mutate({ address: address.trim() });
+  }
+
   async function signOut() {
     try {
       await api.logout();
@@ -137,6 +159,7 @@ export default function DashboardPage() {
           <nav aria-label="Primary navigation" className="hidden items-center gap-1 md:flex">
             <a className="rounded-lg bg-sky-400/10 px-3 py-2 text-sm text-sky-200" href="#overview">Overview</a>
             <a className="rounded-lg px-3 py-2 text-sm text-slate-400 hover:bg-white/5 hover:text-white" href="#transactions">Transactions</a>
+            <a className="rounded-lg px-3 py-2 text-sm text-slate-400 hover:bg-white/5 hover:text-white" href="#addresses">Addresses</a>
             <a className="rounded-lg px-3 py-2 text-sm text-slate-400 hover:bg-white/5 hover:text-white" href="#alerts">Alerts</a>
             <a className="rounded-lg px-3 py-2 text-sm text-slate-400 hover:bg-white/5 hover:text-white" href="#cases">Cases</a>
           </nav>
@@ -225,6 +248,51 @@ export default function DashboardPage() {
                 <div className="flex flex-wrap justify-center gap-4 text-xs text-slate-400">
                   {(["medium", "high", "critical"] as const).map((severity) => <span key={severity} className="flex items-center gap-2"><i className="h-2 w-2 rounded-full" style={{ backgroundColor: PIE_COLORS[severity] }} />{severity}</span>)}
                 </div>
+              </Card>
+            </section>
+
+            <section id="addresses">
+              <Card>
+                <div className="mb-5 flex items-center justify-between">
+                  <div><p className="label">Wallet explorer</p><h2 className="mt-1 text-lg font-semibold">Bitcoin address history</h2></div>
+                  <Search className="text-slate-500" size={19} />
+                </div>
+                <form onSubmit={submitAddressLookup} className="flex flex-col gap-3 sm:flex-row">
+                  <label className="sr-only" htmlFor="bitcoin-address">Bitcoin address</label>
+                  <input id="bitcoin-address" className="field font-mono text-sm" placeholder="Bitcoin mainnet address" minLength={26} maxLength={74} pattern="(?:[13][1-9A-HJ-NP-Za-km-z]{25,34}|bc1[ac-hj-np-z02-9]{11,71})" required value={address} onChange={(event) => setAddress(event.target.value)} />
+                  <button className="button shrink-0" disabled={lookupAddress.isPending}><Search size={16} />{lookupAddress.isPending ? "Searching..." : "Search address"}</button>
+                </form>
+                {addressHistory && (
+                  <div className="mt-5">
+                    <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                      <p className="break-all font-mono text-xs text-sky-200">{addressHistory.address}</p>
+                      <p className="text-xs text-slate-500">Source: {addressHistory.source} · Retrieved {new Date(addressHistory.retrieved_at).toLocaleString()}</p>
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      <DataCell label="Confirmed transactions" value={addressHistory.chain_stats.tx_count.toLocaleString()} />
+                      <DataCell label="Confirmed received" value={`${(addressHistory.chain_stats.funded_txo_sum / 100_000_000).toFixed(8)} BTC`} />
+                      <DataCell label="Confirmed spent" value={`${(addressHistory.chain_stats.spent_txo_sum / 100_000_000).toFixed(8)} BTC`} />
+                      <DataCell label="Mempool transactions" value={addressHistory.mempool_stats.tx_count.toLocaleString()} />
+                    </div>
+                    <div className="mt-5 overflow-x-auto">
+                      <table className="w-full min-w-[640px] text-left text-sm">
+                        <thead className="border-b border-slate-800 text-xs uppercase tracking-wider text-slate-500"><tr><th className="py-3 pr-4 font-medium">Transaction</th><th className="py-3 pr-4 font-medium">Status</th><th className="py-3 pr-4 font-medium">Block</th><th className="py-3 pr-4 font-medium">Outputs</th><th className="py-3 text-right font-medium">Action</th></tr></thead>
+                        <tbody className="divide-y divide-slate-800/70">
+                          {addressHistory.transactions.map((item) => <tr key={item.txid}>
+                            <td className="py-3 pr-4 font-mono text-xs text-slate-300">{item.txid.slice(0, 18)}…</td>
+                            <td className="py-3 pr-4">{item.is_confirmed === null ? <StatusPill tone="blue">Unknown</StatusPill> : item.is_confirmed ? <StatusPill tone="green">Confirmed</StatusPill> : <StatusPill tone="amber">Unconfirmed</StatusPill>}</td>
+                            <td className="py-3 pr-4 text-slate-400">{item.block_height?.toLocaleString() ?? "Pending"}</td>
+                            <td className="py-3 pr-4 text-slate-400">{item.output_count}</td>
+                            <td className="py-3 text-right"><button type="button" className="text-xs text-sky-300 hover:text-sky-200" onClick={() => { setTxid(item.txid); lookup.mutate(item.txid); }}>Inspect</button></td>
+                          </tr>)}
+                        </tbody>
+                      </table>
+                    </div>
+                    {addressHistory.transactions.length === 0 && <p className="py-4 text-center text-sm text-slate-500">No recent transactions returned by the provider.</p>}
+                    {addressHistory.next_cursor && <button className="button secondary mt-4" disabled={lookupAddress.isPending} onClick={() => lookupAddress.mutate({ address: addressHistory.address, cursor: addressHistory.next_cursor ?? undefined })}>{lookupAddress.isPending ? "Loading..." : "Load older transactions"}</button>}
+                    <p className="mt-3 text-xs text-slate-500">Address history is fetched live from the configured provider. Mempool activity is shown separately from confirmed chain totals.</p>
+                  </div>
+                )}
               </Card>
             </section>
 

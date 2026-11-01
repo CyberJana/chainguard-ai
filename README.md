@@ -2,7 +2,7 @@
 
 ChainGuard AI is planned as a blockchain transaction monitoring, risk triage, and digital-forensics investigation platform. It is intended to analyze public blockchain information; it will not custody funds or request wallet seed phrases.
 
-> **Implementation status:** The repository now includes an initial FastAPI/PostgreSQL backend for identity, administrator-created users and invitations, Bitcoin transaction observations, uncalibrated rule-based risk triage, alerts, investigation cases, and SHA-256-verified evidence uploads. MFA, Ethereum, graph workflows, trained/calibrated models, rate limiting, and production hardening are not complete. This is not production-ready and must not be used for operational investigations or decisions.
+> **Implementation status:** The repository includes an initial FastAPI/PostgreSQL backend for identity, Bitcoin transaction and live address-history lookups, uncalibrated rule-based risk triage, alerts, investigation cases, and SHA-256-verified evidence uploads. MFA, Ethereum, graph workflows, trained/calibrated models, rate limiting, and production hardening are not complete. This is not production-ready and must not be used for operational investigations or decisions.
 
 ## Planned capabilities
 
@@ -11,7 +11,7 @@ ChainGuard AI is planned as a blockchain transaction monitoring, risk triage, an
 - Analyst-managed alerts, investigations, evidence provenance, chain of custody, and reports.
 - Organization-scoped access controls, audit trails, and operational monitoring.
 
-The current Bitcoin adapter uses a configured HTTPS API compatible with mempool.space to retrieve individual transactions. It preserves changed provider payloads as separate observations and updates the current normalized record. Address history, streaming ingestion, Ethereum, ML training, model calibration, and external threat-intelligence integrations are future work. The initial rules score is explicitly uncalibrated and must not be interpreted as a fraud probability.
+The current Bitcoin adapter uses a configured HTTPS API compatible with mempool.space to retrieve individual transactions and paginated address history. Individual transaction payloads are persisted as distinct observations; address-history pages are validated and returned live with provider provenance, but are not persisted. Block ingestion, reorganization orchestration, streaming ingestion, Ethereum, ML training, model calibration, and external threat-intelligence integrations remain future work. The initial rules score is explicitly uncalibrated and must not be interpreted as a fraud probability.
 
 The planned system boundaries, trust assumptions, and project layout are described in [docs/architecture.md](docs/architecture.md). These are design targets, not claims about implemented controls.
 
@@ -39,7 +39,7 @@ flowchart LR
 - Windows 10/11 with Docker Desktop configured for Linux containers (WSL 2 backend recommended), or a compatible Docker Engine with Docker Compose v2.
 - Git.
 
-Docker Compose provisions PostgreSQL, Redis, and the API. The API image installs the pinned Python dependencies and applies Alembic migrations before starting. The frontend is a separate Next.js application and can run locally against the API. The repository has not yet been validated in an environment with Docker, Python, or Node.js installed.
+Docker Compose provisions PostgreSQL, Redis, and the API. The API image installs the pinned Python dependencies and applies Alembic migrations before starting. The frontend is a separate Next.js application and can run locally against the API. Backend tests and frontend typecheck/build have been run using temporary local Python and Node toolchains; Docker Compose runtime validation has not been run.
 
 ### Start services on Windows
 
@@ -73,6 +73,7 @@ The authenticated API currently also exposes:
 | `/api/v1/admin/users` and `/api/v1/admin/invitations` | Administrator-scoped user management and invitation issuance |
 | `GET /api/v1/transactions` | Paginated stored public transaction observations |
 | `GET /api/v1/transactions/bitcoin/{txid}` | Fetch and persist a transaction from the configured provider |
+| `GET /api/v1/addresses/bitcoin/{address}` | Fetch live address totals and a 25-transaction history page; pass `cursor` for older pages |
 | `POST /api/v1/risk/analyze` | Analyze an ingested transaction using explicitly uncalibrated rules |
 | `GET /api/v1/alerts` / `PATCH /api/v1/alerts/{id}` | Organization-scoped alert triage |
 | `/api/v1/cases` | Organization-scoped case CRUD, notes, transaction links, events, and JSON report |
@@ -101,7 +102,7 @@ python -m pip install -r requirements-test.txt
 python -m pytest
 ```
 
-Direct dependency versions are pinned in the requirements files; a generated transitive lockfile is still outstanding. These tests have not yet been executed in this environment.
+Direct dependency versions are pinned in the requirements files; a generated transitive lockfile is still outstanding. The latest backend test run passed all 19 tests. Frontend typecheck and production build are also validated; the test suite uses an in-memory SQLite database and does not require Docker.
 
 ### Frontend
 
@@ -140,7 +141,7 @@ Work is staged to keep each layer reviewable and verifiable:
 
 1. Repository setup, architecture, and development environment — **complete (not runtime-validated)**.
 2. FastAPI, PostgreSQL schema/migrations, and authentication — **login/session/bootstrap/admin invitation and user management implemented; MFA, password reset, and full RBAC remain**.
-3. Bitcoin ingestion and normalization — **individual transaction provider lookup, deduplication, and observation history implemented; address search, block ingestion, and reorganization orchestration remain**.
+3. Bitcoin ingestion and normalization — **individual transaction provider lookup, deduplication, observation history, and live paginated address-history lookup implemented; address pages are not persisted, while block ingestion and reorganization orchestration remain**.
 4. Risk analysis — **uncalibrated explainable rules baseline implemented; ML training, evaluation, and calibration remain**.
 5. Alerts, cases, notes, transaction links, evidence hashing/custody, and JSON case reports — **initial APIs implemented; broader workflow/report formats and supervisory review remain**.
 6. Next.js dashboard and transaction explorer — **initial API-connected dashboard and case details implemented; graph view and remaining analyst modules remain**.

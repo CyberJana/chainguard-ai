@@ -21,6 +21,8 @@ Bitcoin transaction data is retrieved from the configured HTTPS provider adapter
 
 Alert listing supports server-side filters for status, severity, network, assigned or unassigned state, assignee ID, and a timezone-aware creation-time range. The organization predicate is always applied independently of optional client filters; pagination remains bounded.
 
+JSON and CSV case reports use the same tenant-scoped report data, include provider observations, analyst notes, evidence hashes/provenance, activity, and chain-of-custody events, and record export format in the audit log. CSV cells beginning with spreadsheet formula characters are prefixed to reduce formula-injection risk; CSV is a convenience export, not a signed or tamper-evident forensic package.
+
 ## Data flow
 
 1. A configured provider adapter retrieves public chain data or a background job accepts a requested lookup.

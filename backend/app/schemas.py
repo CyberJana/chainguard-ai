@@ -1,4 +1,7 @@
-from pydantic import BaseModel, ConfigDict, EmailStr, Field
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, ConfigDict, EmailStr, Field, field_validator
 
 from app.models import Role
 
@@ -21,3 +24,75 @@ class UserResponse(BaseModel):
     role: Role
 
     model_config = ConfigDict(from_attributes=True)
+
+
+class TransactionResponse(BaseModel):
+    id: int
+    network: str
+    txid: str
+    block_height: int | None
+    block_hash: str | None
+    block_time: datetime | None
+    is_confirmed: bool | None
+    confirmations: int | None
+    fee_satoshis: int | None
+    input_count: int
+    output_count: int
+    output_total_satoshis: int
+    raw_observation: dict[str, Any]
+    source: str
+    observed_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RiskResponse(BaseModel):
+    id: int
+    transaction_id: int
+    score: int
+    category: str
+    model_version: str
+    calibrated: bool
+    explanation: list[dict[str, Any]]
+    recommendation: str
+    analyzed_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class RiskRequest(BaseModel):
+    txid: str = Field(pattern=r"^[0-9a-fA-F]{64}$")
+
+
+class UserCreate(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=14, max_length=1024)
+    role: Role
+
+
+class UserUpdate(BaseModel):
+    role: Role | None = None
+    is_active: bool | None = None
+
+    @field_validator("role", "is_active", mode="before")
+    @classmethod
+    def reject_null_updates(cls, value: object) -> object:
+        if value is None:
+            raise ValueError("field cannot be null")
+        return value
+
+
+class InvitationCreate(BaseModel):
+    email: EmailStr
+    role: Role
+
+
+class InvitationResponse(BaseModel):
+    invitation_token: str
+    expires_at: datetime
+
+
+class InvitationAccept(BaseModel):
+    invitation_token: str = Field(min_length=32, max_length=128)
+    password: str = Field(min_length=14, max_length=1024)

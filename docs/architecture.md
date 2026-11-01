@@ -2,7 +2,7 @@
 
 ## Status
 
-This document defines the target boundaries for phased implementation. It does not assert that the planned services, access controls, or workflows already exist. The current Compose setup provides local PostgreSQL, Redis, and an initial FastAPI identity service. Its schema has organizations, users, roles, hashed bearer sessions, and audit events; it does not yet include blockchain, case, evidence, MFA, or invitation workflows.
+This document defines the target boundaries for phased implementation. It does not assert that the planned services, access controls, or workflows already exist. The current Compose setup provides local PostgreSQL, Redis, and an initial FastAPI service. Its schema includes identity, public Bitcoin observations, heuristic risk assessments, alerts, case activity, evidence metadata, and one-time invitations; MFA, Ethereum, streaming ingestion, and calibrated models are not implemented.
 
 ## Components and ownership
 
@@ -15,7 +15,9 @@ This document defines the target boundaries for phased implementation. It does n
 - **Optional graph store:** Derived graph projections only. PostgreSQL remains authoritative, and graph results must be traceable to source observations.
 - **External intelligence:** Integrations are allowlisted/configured, attributed to source, licensed or otherwise permitted, and timestamped with confidence and expiry metadata.
 
-The initial authentication implementation uses Argon2 password hashes and opaque, random bearer tokens. Only token digests are persisted, and logout revokes the presented session. Initial account provisioning is an interactive one-time CLI bootstrap; self-registration and invitation workflows are not implemented. The role dependency helper is groundwork for protected routes, not evidence that all application actions are currently authorized.
+The initial authentication implementation uses Argon2 password hashes and opaque, random bearer tokens. Only token digests are persisted, and logout revokes the presented session. Initial account provisioning is an interactive one-time CLI bootstrap; self-registration, password-reset, and MFA workflows are not implemented. Administrators can create users and issue one-time invitations expiring after 24 hours. Authentication is required for application APIs, but a complete role matrix and resource-level authorization policy remain future work.
+
+Bitcoin transaction data is retrieved from the configured HTTPS provider adapter. Each distinct provider payload is retained as a separate observation hash to preserve changes such as confirmation/reorganization updates. Current normalized rows are shared public-chain data; risk assessments, alerts, cases, notes, and evidence are organization-scoped. The current rules version is explicitly uncalibrated and must not be presented as a probability or confirmation of wrongdoing.
 
 ## Data flow
 

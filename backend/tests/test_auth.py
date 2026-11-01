@@ -40,7 +40,7 @@ def client() -> Generator[TestClient, None, None]:
         db.add(
             User(
                 organization_id=organization.id,
-                email="analyst@example.test",
+                email="analyst@example.com",
                 password_hash=hash_password("correct horse battery staple"),
                 role=Role.ANALYST.value,
             )
@@ -54,11 +54,11 @@ def client() -> Generator[TestClient, None, None]:
 def test_login_me_and_logout_revokes_only_current_session(client: TestClient) -> None:
     first = client.post(
         "/api/v1/auth/login",
-        json={"email": "analyst@example.test", "password": "correct horse battery staple"},
+        json={"email": "analyst@example.com", "password": "correct horse battery staple"},
     )
     second = client.post(
         "/api/v1/auth/login",
-        json={"email": "analyst@example.test", "password": "correct horse battery staple"},
+        json={"email": "analyst@example.com", "password": "correct horse battery staple"},
     )
     assert first.status_code == second.status_code == 200
     token_one = first.json()["access_token"]
@@ -73,7 +73,7 @@ def test_login_me_and_logout_revokes_only_current_session(client: TestClient) ->
 def test_login_rejects_bad_password_and_unknown_user(client: TestClient) -> None:
     response = client.post(
         "/api/v1/auth/login",
-        json={"email": "analyst@example.test", "password": "wrong password"},
+        json={"email": "analyst@example.com", "password": "wrong password"},
     )
     assert response.status_code == 401
     assert response.json()["detail"] == "Invalid email or password"
@@ -91,7 +91,7 @@ def test_health_endpoint_checks_database(client: TestClient) -> None:
 
 def test_role_dependency_rejects_insufficient_role(client: TestClient) -> None:
     with TestSession() as db:
-        user = db.query(User).filter_by(email="analyst@example.test").one()
+        user = db.query(User).filter_by(email="analyst@example.com").one()
         with pytest.raises(HTTPException) as error:
             require_roles(Role.ADMINISTRATOR.value)(user)
     assert error.value.status_code == 403

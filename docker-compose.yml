@@ -39,8 +39,12 @@ services:
       DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL in .env}
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-8}
       ENVIRONMENT: development
+      EVIDENCE_STORAGE_PATH: /data/evidence
+      BITCOIN_PROVIDER_BASE_URL: ${BITCOIN_PROVIDER_BASE_URL:-https://mempool.space/api}
     ports:
       - "127.0.0.1:8000:8000"
+    volumes:
+      - evidence_data:/data/evidence
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,3 +62,4 @@ services:
 volumes:
   postgres_data:
   redis_data:
+  evidence_data:

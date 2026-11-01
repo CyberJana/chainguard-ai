@@ -4,17 +4,55 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.security import HTTPAuthorizationCredentials
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.database import get_db
 from app.dependencies import CurrentUser, bearer_scheme
-from app.models import AuditLog, Organization, User, UserSession
-from app.schemas import LoginRequest, TokenResponse, UserResponse
-from app.security import digest_token, issue_token, verify_password
+from app.models import AuditLog, Organization, User, UserInvitation, UserSession
+from app.schemas import InvitationAccept, LoginRequest, TokenResponse, UserResponse
+from app.security import digest_token, hash_password, issue_token, verify_password
 
 router = APIRouter(prefix="/api/v1/auth", tags=["authentication"])
 DbSession = Annotated[Session, Depends(get_db)]
+
+
+@router.post("/accept-invitation", response_model=UserResponse, status_code=201)
+def accept_invitation(payload: InvitationAccept, db: DbSession) -> User:
+    now = datetime.now(timezone.utc)
+    invitation = db.scalar(
+        select(UserInvitation)
+        .where(
+            UserInvitation.token_digest == digest_token(payload.invitation_token),
+            UserInvitation.accepted_at.is_(None),
+            UserInvitation.revoked_at.is_(None),
+            UserInvitation.expires_at > now,
+        )
+        .with_for_update()
+    )
+    if invitation is None:
+        raise HTTPException(status_code=400, detail="Invitation is invalid or expired")
+    organization = db.get(Organization, invitation.organization_id)
+    if organization is None or not organization.is_active:
+        raise HTTPException(status_code=400, detail="Invitation is invalid or expired")
+    user = User(
+        organization_id=invitation.organization_id,
+        email=invitation.email,
+        password_hash=hash_password(payload.password),
+        role=invitation.role,
+    )
+    db.add(user)
+    invitation.accepted_at = now
+    try:
+        db.flush()
+    except IntegrityError as exc:
+        db.rollback()
+        raise HTTPException(status_code=400, detail="Invitation is invalid or expired") from exc
+    db.add(AuditLog(organization_id=invitation.organization_id, event_type="auth.invitation_accepted", details=f"user_id={user.id}"))
+    db.commit()
+    db.refresh(user)
+    return user
 
 
 @router.post("/login", response_model=TokenResponse)

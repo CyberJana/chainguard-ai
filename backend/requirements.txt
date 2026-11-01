@@ -2,6 +2,8 @@ alembic==1.15.2
 argon2-cffi==23.1.0
 fastapi==0.115.12
 email-validator==2.2.0
+httpx==0.28.1
+python-multipart==0.0.20
 psycopg[binary]==3.2.9
 pydantic-settings==2.9.1
 sqlalchemy==2.0.41

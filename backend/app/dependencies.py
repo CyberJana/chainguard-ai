@@ -50,3 +50,6 @@ def require_roles(*allowed_roles: str):
         return user
 
     return role_dependency
+
+
+Administrator = Annotated[User, Depends(require_roles("administrator"))]

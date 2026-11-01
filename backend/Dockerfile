@@ -12,7 +12,9 @@ COPY alembic.ini .
 COPY migrations ./migrations
 COPY app ./app
 
-RUN useradd --create-home --uid 10001 appuser
+RUN useradd --create-home --uid 10001 appuser \
+    && mkdir -p /data/evidence \
+    && chown -R appuser:appuser /data/evidence
 USER appuser
 
 EXPOSE 8000

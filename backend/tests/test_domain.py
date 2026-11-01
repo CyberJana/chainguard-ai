@@ -18,6 +18,8 @@ from app.models import (
     Base,
     BlockchainTransaction,
     EvidenceItem,
+    EthereumTransaction,
+    EthereumTransactionObservation,
     Organization,
     Role,
     TransactionObservation,
@@ -33,6 +35,7 @@ from app.services.bitcoin import (
     normalize_bitcoin_transaction,
 )
 from app.services.risk import assess_bitcoin_transaction
+from app.services.ethereum import normalize_ethereum_transaction
 
 engine = create_engine("sqlite://", connect_args={"check_same_thread": False}, poolclass=StaticPool)
 TestSession = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False)
@@ -268,6 +271,191 @@ def test_provider_configuration_requires_https_except_local_development() -> Non
         Settings(environment="development", bitcoin_provider_base_url="http://provider.example/api")
     settings = Settings(environment="development", bitcoin_provider_base_url="http://localhost:3000/api")
     assert settings.bitcoin_provider_base_url == "http://localhost:3000/api"
+    assert Settings(environment="development", ethereum_provider_url="").ethereum_provider_url is None
+    with pytest.raises(ValueError):
+        Settings(environment="development", ethereum_provider_url="http://provider.example/rpc")
+    assert Settings(environment="development", ethereum_provider_url="http://localhost:8545").ethereum_provider_url == "http://localhost:8545"
+
+
+def test_ethereum_normalization_keeps_wei_and_gas_units_and_checks_provider_data() -> None:
+    tx_hash = "0x" + "a" * 64
+    transaction = {
+        "hash": tx_hash,
+        "from": "0x" + "b" * 40,
+        "to": "0x" + "c" * 40,
+        "value": "0xde0b6b3a7640000",
+        "gas": "0x5208",
+        "blockNumber": "0x10",
+        "blockHash": "0x" + "d" * 64,
+    }
+    receipt = {
+        "transactionHash": tx_hash,
+        "status": "0x1",
+        "gasUsed": "0x5208",
+        "effectiveGasPrice": "0x3b9aca00",
+    }
+    normalized = normalize_ethereum_transaction(tx_hash, transaction, receipt, "0x1")
+    assert normalized["chain_id"] == 1
+    assert normalized["block_number"] == 16
+    assert normalized["value_wei"] == "1000000000000000000"
+    assert normalized["gas_limit"] == 21_000
+    assert normalized["gas_used"] == 21_000
+    assert normalized["effective_gas_price_wei"] == "1000000000"
+    assert normalized["receipt_status"] == "success"
+    assert normalized["from_address"] == "0x" + "b" * 40
+
+    with pytest.raises(ValueError):
+        normalize_ethereum_transaction(tx_hash, {**transaction, "hash": "0x" + "e" * 64}, receipt, "0x1")
+    with pytest.raises(ValueError):
+        normalize_ethereum_transaction(tx_hash, {**transaction, "value": "-1"}, receipt, "0x1")
+    with pytest.raises(ValueError):
+        normalize_ethereum_transaction(tx_hash, {**transaction, "from": 1}, receipt, "0x1")
+    with pytest.raises(ValueError):
+        normalize_ethereum_transaction(tx_hash, transaction, {**receipt, "status": "0x2"}, "0x1")
+    with pytest.raises(ValueError):
+        normalize_ethereum_transaction(
+            tx_hash,
+            transaction,
+            {**receipt, "blockNumber": "0x11"},
+            "0x1",
+        )
+
+
+def test_ethereum_lookup_persists_provider_observations_and_audits(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.ethereum as ethereum
+
+    tx_hash = "0x" + "a" * 64
+    transaction = {
+        "hash": tx_hash,
+        "from": "0x" + "b" * 40,
+        "to": "0x" + "c" * 40,
+        "value": "0xde0b6b3a7640000",
+        "gas": "0x5208",
+        "blockNumber": "0x10",
+        "blockHash": "0x" + "d" * 64,
+    }
+    current_receipt = {
+        "transactionHash": tx_hash,
+        "status": "0x1",
+        "gasUsed": "0x5208",
+        "effectiveGasPrice": "0x3b9aca00",
+    }
+
+    def fake_fetch(requested_hash: str):
+        assert requested_hash == tx_hash
+        return (
+            {"chain_id": "0x1", "transaction": transaction, "receipt": current_receipt.copy()},
+            "rpc.example",
+        )
+
+    monkeypatch.setattr(ethereum, "fetch_ethereum_transaction", fake_fetch)
+    headers = {"Authorization": f"Bearer {token_for(client)}"}
+    first = client.get(f"/api/v1/transactions/ethereum/{tx_hash}", headers=headers)
+    assert first.status_code == 200
+    assert first.json()["value_wei"] == "1000000000000000000"
+    assert first.json()["receipt_status"] == "success"
+    assert first.json()["source"] == "rpc.example"
+
+    current_receipt["status"] = "0x0"
+    second = client.get(f"/api/v1/transactions/ethereum/{tx_hash}", headers=headers)
+    assert second.status_code == 200
+    assert second.json()["receipt_status"] == "reverted"
+    with TestSession() as db:
+        stored = db.scalar(select(EthereumTransaction).where(EthereumTransaction.tx_hash == tx_hash))
+        observations = list(db.scalars(select(EthereumTransactionObservation)))
+        audits = list(db.scalars(select(AuditLog).where(AuditLog.event_type == "transaction.lookup")))
+        assert stored is not None
+        assert stored.chain_id == 1
+        assert stored.gas_used == 21_000
+        assert len(observations) == 2
+        assert len(audits) == 2
+        assert all(f"ethereum:1:{tx_hash}" == audit.details for audit in audits)
+
+    invalid = client.get("/api/v1/transactions/ethereum/not-a-hash", headers=headers)
+    assert invalid.status_code == 422
+
+
+def test_ethereum_lookup_requires_configured_provider(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.services.ethereum as ethereum
+
+    monkeypatch.setattr(ethereum.settings, "ethereum_provider_url", None)
+    headers = {"Authorization": f"Bearer {token_for(client)}"}
+    response = client.get(
+        f"/api/v1/transactions/ethereum/0x{'a' * 64}",
+        headers=headers,
+    )
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Ethereum lookup is not configured"
+
+
+def test_ethereum_provider_fetch_uses_validated_json_rpc_envelopes(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+    import app.services.ethereum as ethereum
+
+    tx_hash = "0x" + "a" * 64
+    transaction = {
+        "hash": tx_hash,
+        "from": "0x" + "b" * 40,
+        "to": None,
+        "value": "0x0",
+        "gas": "0x100000",
+        "blockNumber": None,
+        "blockHash": None,
+    }
+    results = {
+        "eth_chainId": "0x1",
+        "eth_getTransactionByHash": transaction,
+        "eth_getTransactionReceipt": None,
+    }
+    requests = []
+    rpc_response_id: int | str = 1
+
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+
+        def __init__(self, body: dict) -> None:
+            self.content = json.dumps(body).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return None
+
+        def iter_bytes(self):
+            return iter((self.content,))
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return None
+
+        def stream(self, method: str, url: str, json: dict, headers: dict) -> FakeResponse:
+            requests.append((method, url, json))
+            return FakeResponse({"jsonrpc": "2.0", "id": rpc_response_id, "result": results[json["method"]]})
+
+    monkeypatch.setattr(ethereum.settings, "ethereum_provider_url", "https://rpc.example/api")
+    monkeypatch.setattr(ethereum.httpx, "Client", FakeClient)
+    payload, source = ethereum.fetch_ethereum_transaction(tx_hash)
+    assert source == "rpc.example"
+    assert payload["chain_id"] == "0x1"
+    assert payload["transaction"]["hash"] == tx_hash
+    assert [request[2]["method"] for request in requests] == [
+        "eth_chainId",
+        "eth_getTransactionByHash",
+        "eth_getTransactionReceipt",
+    ]
+    assert all(request[0] == "POST" and request[1] == "https://rpc.example/api" for request in requests)
+    rpc_response_id = "1"
+    with pytest.raises(HTTPException) as error:
+        ethereum.fetch_ethereum_transaction(tx_hash)
+    assert error.value.status_code == 502
 
 
 def test_heuristic_risk_is_explicitly_uncalibrated() -> None:

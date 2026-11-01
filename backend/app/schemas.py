@@ -47,6 +47,27 @@ class TransactionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class EthereumTransactionResponse(BaseModel):
+    id: int
+    chain_id: int
+    tx_hash: str
+    block_number: int | None
+    block_hash: str | None
+    receipt_status: str | None
+    from_address: str
+    to_address: str | None
+    value_wei: str
+    gas_limit: int
+    gas_used: int | None
+    effective_gas_price_wei: str | None
+    raw_observation: dict[str, Any]
+    source: str
+    observed_at: datetime
+    updated_at: datetime
+
+    model_config = ConfigDict(from_attributes=True)
+
+
 class BitcoinAddressStatsResponse(BaseModel):
     funded_txo_count: int
     funded_txo_sum: int

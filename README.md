@@ -75,12 +75,12 @@ The authenticated API currently also exposes:
 | `GET /api/v1/transactions/bitcoin/{txid}` | Fetch and persist a transaction from the configured provider |
 | `GET /api/v1/addresses/bitcoin/{address}` | Fetch live address totals and a 25-transaction history page; pass `cursor` for older pages |
 | `POST /api/v1/risk/analyze` | Analyze an ingested transaction using explicitly uncalibrated rules |
-| `GET /api/v1/alerts` / `PATCH /api/v1/alerts/{id}` | Organization-scoped alert triage |
+| `GET /api/v1/alerts` / `PATCH /api/v1/alerts/{id}` | Organization-scoped alert triage; filter by status, severity, network, assignee, and timezone-aware creation range |
 | `/api/v1/cases` | Organization-scoped case CRUD, notes, transaction links, events, and JSON report |
 | `/api/v1/cases/{id}/evidence` | Upload/list case evidence; uploads are limited to 10 MiB |
 | `/api/v1/cases/{id}/evidence/{evidence_id}/download` | Verify SHA-256 before attachment download and record custody event |
 
-These endpoints are a starting point, not a complete API contract. Organization scoping is enforced in case/alert/risk queries; blockchain observations contain public chain data and are shared across tenants. The API does not yet include rate limiting, MFA, password reset, or a full role-specific permission policy. User administration and invite creation require the administrator role; invitations expire after 24 hours and are accepted once.
+These endpoints are a starting point, not a complete API contract. Organization scoping is enforced in case/alert/risk queries; blockchain observations contain public chain data and are shared across tenants. Alert filters are applied server-side and remain restricted to the current organization. The API does not yet include rate limiting, MFA, password reset, or a full role-specific permission policy. User administration and invite creation require the administrator role; invitations expire after 24 hours and are accepted once.
 
 To stop the services while retaining database state:
 
@@ -156,7 +156,7 @@ Work is staged to keep each layer reviewable and verifiable:
 2. FastAPI, PostgreSQL schema/migrations, and authentication — **login/session/bootstrap/admin invitation and user management implemented; MFA, password reset, and full RBAC remain**.
 3. Bitcoin ingestion and normalization — **individual transaction provider lookup, deduplication, observation history, and live paginated address-history lookup implemented; address pages are not persisted, while block ingestion and reorganization orchestration remain**.
 4. Risk analysis — **uncalibrated explainable rules baseline and offline Isolation Forest training/evaluation pipeline implemented; real licensed dataset, evaluated model, API inference integration, and calibration remain**.
-5. Alerts, cases, notes, transaction links, evidence hashing/custody, and JSON case reports — **initial APIs implemented; broader workflow/report formats and supervisory review remain**.
+5. Alerts, cases, notes, transaction links, evidence hashing/custody, and JSON case reports — **initial APIs implemented; alert filters cover network, status, severity, assignment, and creation time; notifications, broader report formats, and supervisory review remain**.
 6. Next.js dashboard and transaction explorer — **initial API-connected dashboard and case details implemented; graph view and remaining analyst modules remain**.
 7. Graph exploration — **not implemented**.
 8. Ethereum and reviewed threat-intelligence integrations — **not implemented**.

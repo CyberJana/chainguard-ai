@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -7,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import CurrentUser
-from app.models import Alert, AuditLog, User
+from app.models import Alert, AuditLog, BlockchainTransaction, User
 from app.schemas_alerts import AlertResponse, AlertUpdate
 
 router = APIRouter(prefix="/api/v1/alerts", tags=["alerts"])
@@ -20,14 +21,41 @@ def list_alerts(
     db: DbSession,
     status_filter: Annotated[str | None, Query(alias="status", pattern="^(open|acknowledged|investigating|dismissed|closed)$")] = None,
     severity: Annotated[str | None, Query(pattern="^(medium|high|critical)$")] = None,
+    network: Annotated[str | None, Query(pattern="^[a-z][a-z0-9_-]{0,19}$")] = None,
+    assigned_user_id: Annotated[int | None, Query(ge=1)] = None,
+    unassigned: bool = False,
+    created_after: datetime | None = None,
+    created_before: datetime | None = None,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0, le=100_000)] = 0,
 ) -> list[Alert]:
+    if assigned_user_id is not None and unassigned:
+        raise HTTPException(status_code=422, detail="Choose either assigned_user_id or unassigned, not both")
+    for field_name, value in (("created_after", created_after), ("created_before", created_before)):
+        if value is not None and (value.tzinfo is None or value.utcoffset() is None):
+            raise HTTPException(status_code=422, detail=f"{field_name} must include a timezone")
+    if created_after is not None and created_before is not None and created_after > created_before:
+        raise HTTPException(status_code=422, detail="created_after must not be later than created_before")
+
     statement = select(Alert).where(Alert.organization_id == user.organization_id)
     if status_filter:
         statement = statement.where(Alert.status == status_filter)
     if severity:
         statement = statement.where(Alert.severity == severity)
+    if network:
+        statement = statement.where(
+            Alert.transaction_id.in_(
+                select(BlockchainTransaction.id).where(BlockchainTransaction.network == network)
+            )
+        )
+    if assigned_user_id is not None:
+        statement = statement.where(Alert.assigned_user_id == assigned_user_id)
+    elif unassigned:
+        statement = statement.where(Alert.assigned_user_id.is_(None))
+    if created_after is not None:
+        statement = statement.where(Alert.created_at >= created_after.astimezone(timezone.utc))
+    if created_before is not None:
+        statement = statement.where(Alert.created_at <= created_before.astimezone(timezone.utc))
     statement = statement.order_by(Alert.created_at.desc(), Alert.id.desc()).limit(limit).offset(offset)
     return list(db.scalars(statement))
 

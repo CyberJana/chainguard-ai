@@ -19,6 +19,8 @@ The initial authentication implementation uses Argon2 password hashes and opaque
 
 Bitcoin transaction data is retrieved from the configured HTTPS provider adapter. Each distinct provider payload is retained as a separate observation hash to preserve changes such as confirmation/reorganization updates. Authenticated address-history lookups validate provider summaries and transaction pages and return up to 25 entries per cursor page with source and retrieval timestamp; these live address results are not persisted. Current normalized transaction rows are shared public-chain data; risk assessments, alerts, cases, notes, and evidence are organization-scoped. The current rules version is explicitly uncalibrated and must not be presented as a probability or confirmation of wrongdoing.
 
+Alert listing supports server-side filters for status, severity, network, assigned or unassigned state, assignee ID, and a timezone-aware creation-time range. The organization predicate is always applied independently of optional client filters; pagination remains bounded.
+
 ## Data flow
 
 1. A configured provider adapter retrieves public chain data or a background job accepts a requested lookup.

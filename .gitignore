@@ -19,6 +19,7 @@ node_modules/
 .next/
 out/
 coverage/
+*.tsbuildinfo
 
 # Local data and generated artifacts
 *.sqlite3

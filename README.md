@@ -2,7 +2,7 @@
 
 ChainGuard AI is planned as a blockchain transaction monitoring, risk triage, and digital-forensics investigation platform. It is intended to analyze public blockchain information; it will not custody funds or request wallet seed phrases.
 
-> **Implementation status:** Phase 1 is complete. Phase 2 has an initial FastAPI service, PostgreSQL identity/audit schema, password-based login, revocable sessions, and a bootstrap administrator flow. The frontend, MFA, invitations, blockchain ingestion, risk models, and investigation workflows are not implemented. This is not production-ready and must not be used for operational investigations or decisions.
+> **Implementation status:** The repository now includes an initial FastAPI/PostgreSQL backend for identity, administrator-created users and invitations, Bitcoin transaction observations, uncalibrated rule-based risk triage, alerts, investigation cases, and SHA-256-verified evidence uploads. MFA, Ethereum, graph workflows, trained/calibrated models, rate limiting, and production hardening are not complete. This is not production-ready and must not be used for operational investigations or decisions.
 
 ## Planned capabilities
 
@@ -10,6 +10,8 @@ ChainGuard AI is planned as a blockchain transaction monitoring, risk triage, an
 - Explainable risk indicators with calibrated scores, model/version provenance, and a clear distinction between suspicious activity and confirmed fraud.
 - Analyst-managed alerts, investigations, evidence provenance, chain of custody, and reports.
 - Organization-scoped access controls, audit trails, and operational monitoring.
+
+The current Bitcoin adapter uses a configured HTTPS API compatible with mempool.space to retrieve individual transactions. It preserves changed provider payloads as separate observations and updates the current normalized record. Address history, streaming ingestion, Ethereum, ML training, model calibration, and external threat-intelligence integrations are future work. The initial rules score is explicitly uncalibrated and must not be interpreted as a fraud probability.
 
 The planned system boundaries, trust assumptions, and project layout are described in [docs/architecture.md](docs/architecture.md). These are design targets, not claims about implemented controls.
 
@@ -37,7 +39,7 @@ flowchart LR
 - Windows 10/11 with Docker Desktop configured for Linux containers (WSL 2 backend recommended), or a compatible Docker Engine with Docker Compose v2.
 - Git.
 
-Docker Compose provisions PostgreSQL, Redis, and the initial API. The API image installs the pinned Python dependencies and applies Alembic migrations before starting. The repository has not yet been validated in an environment with Docker, Python, or Node.js installed.
+Docker Compose provisions PostgreSQL, Redis, and the API. The API image installs the pinned Python dependencies and applies Alembic migrations before starting. The frontend is a separate Next.js application and can run locally against the API. The repository has not yet been validated in an environment with Docker, Python, or Node.js installed.
 
 ### Start services on Windows
 
@@ -62,6 +64,23 @@ The bootstrap command is permitted only while the database has no organization o
 
 Login uses `POST /api/v1/auth/login` with JSON `{"email":"...","password":"..."}`. Pass the returned bearer token to `GET /api/v1/auth/me`; `POST /api/v1/auth/logout` revokes only that session. Tokens are opaque random values; only their SHA-256 digests are stored.
 
+The authenticated API currently also exposes:
+
+| Method and path | Purpose |
+| --- | --- |
+| `GET /api/v1/system/health` | Database-backed service health |
+| `POST /api/v1/auth/accept-invitation` | Accept a one-time organization invitation |
+| `/api/v1/admin/users` and `/api/v1/admin/invitations` | Administrator-scoped user management and invitation issuance |
+| `GET /api/v1/transactions` | Paginated stored public transaction observations |
+| `GET /api/v1/transactions/bitcoin/{txid}` | Fetch and persist a transaction from the configured provider |
+| `POST /api/v1/risk/analyze` | Analyze an ingested transaction using explicitly uncalibrated rules |
+| `GET /api/v1/alerts` / `PATCH /api/v1/alerts/{id}` | Organization-scoped alert triage |
+| `/api/v1/cases` | Organization-scoped case CRUD, notes, transaction links, events, and JSON report |
+| `/api/v1/cases/{id}/evidence` | Upload/list case evidence; uploads are limited to 10 MiB |
+| `/api/v1/cases/{id}/evidence/{evidence_id}/download` | Verify SHA-256 before attachment download and record custody event |
+
+These endpoints are a starting point, not a complete API contract. Organization scoping is enforced in case/alert/risk queries; blockchain observations contain public chain data and are shared across tenants. The API does not yet include rate limiting, MFA, password reset, or a full role-specific permission policy. User administration and invite creation require the administrator role; invitations expire after 24 hours and are accepted once.
+
 To stop the services while retaining database state:
 
 ```powershell
@@ -82,7 +101,20 @@ python -m pip install -r requirements-test.txt
 python -m pytest
 ```
 
-Dependency versions are pinned directly in the requirements files; a generated transitive lockfile is still outstanding. These tests have not yet been executed in this environment.
+Direct dependency versions are pinned in the requirements files; a generated transitive lockfile is still outstanding. These tests have not yet been executed in this environment.
+
+### Frontend
+
+With Node.js 22 installed, create the npm lockfile on first setup, then run the dashboard:
+
+```powershell
+cd frontend
+Copy-Item .env.example .env.local
+npm install
+npm run dev
+```
+
+Set `BACKEND_API_URL=http://127.0.0.1:8000` in `frontend/.env.local` when launching Next.js from the host. Sign-in is proxied through Next.js, and the opaque API token is held in an HttpOnly, SameSite=Strict cookie rather than browser storage. The UI currently covers login, transaction lookup/risk, alert triage, case creation/details, notes, evidence upload/download, and JSON report export.
 
 ### Configuration
 
@@ -93,7 +125,7 @@ Dependency versions are pinned directly in the requirements files; a generated t
 | Path | Purpose |
 | --- | --- |
 | `backend/` | FastAPI application, initial identity models/API, migrations, and tests |
-| `frontend/` | Next.js analyst interface (planned) |
+| `frontend/` | Next.js analyst dashboard and case details |
 | `blockchain/` | Provider adapters and normalized chain data (planned) |
 | `ml/` | Reproducible feature, training, inference, and evaluation code (planned) |
 | `tests/` | Unit, integration, and end-to-end tests (planned) |
@@ -107,15 +139,15 @@ Directories are introduced with their implementation rather than empty placehold
 Work is staged to keep each layer reviewable and verifiable:
 
 1. Repository setup, architecture, and development environment — **complete (not runtime-validated)**.
-2. FastAPI, PostgreSQL schema/migrations, and authentication — **initial foundation implemented; MFA, invitations, and resource-level authorization coverage remain**.
-3. Bitcoin ingestion, normalization, transaction lookup, and address search.
-4. Risk analysis pipeline, baselines, evaluation, and score explanations.
-5. Alerts and investigation case workflows.
-6. Next.js dashboard and transaction explorer.
-7. Graph exploration and evidence management.
-8. Ethereum and reviewed threat-intelligence integrations.
-9. Automated testing, security hardening, observability, and performance work.
-10. Deployment preparation and operational documentation.
+2. FastAPI, PostgreSQL schema/migrations, and authentication — **login/session/bootstrap/admin invitation and user management implemented; MFA, password reset, and full RBAC remain**.
+3. Bitcoin ingestion and normalization — **individual transaction provider lookup, deduplication, and observation history implemented; address search, block ingestion, and reorganization orchestration remain**.
+4. Risk analysis — **uncalibrated explainable rules baseline implemented; ML training, evaluation, and calibration remain**.
+5. Alerts, cases, notes, transaction links, evidence hashing/custody, and JSON case reports — **initial APIs implemented; broader workflow/report formats and supervisory review remain**.
+6. Next.js dashboard and transaction explorer — **initial API-connected dashboard and case details implemented; graph view and remaining analyst modules remain**.
+7. Graph exploration — **not implemented**.
+8. Ethereum and reviewed threat-intelligence integrations — **not implemented**.
+9. Automated testing, security hardening, observability, and performance work — **focused tests and CI added; runtime checks and broader coverage remain**.
+10. Deployment preparation and operational documentation — **local Compose setup only; production deployment and backup/restore remain**.
 
 No phase is considered complete until its implementation and relevant checks are present and executed. See [CONTRIBUTING.md](CONTRIBUTING.md) for development expectations.
 

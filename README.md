@@ -11,7 +11,7 @@ ChainGuard AI is planned as a blockchain transaction monitoring, risk triage, an
 - Analyst-managed alerts, investigations, evidence provenance, chain of custody, and reports.
 - Organization-scoped access controls, audit trails, and operational monitoring.
 
-The current Bitcoin adapter uses a configured HTTPS API compatible with mempool.space to retrieve individual transactions and paginated address history. Individual transaction payloads are persisted as distinct observations; address-history pages are validated and returned live with provider provenance, but are not persisted. Block ingestion, reorganization orchestration, streaming ingestion, Ethereum, ML training, model calibration, and external threat-intelligence integrations remain future work. The initial rules score is explicitly uncalibrated and must not be interpreted as a fraud probability.
+The current Bitcoin adapter uses a configured HTTPS API compatible with mempool.space to retrieve individual transactions and paginated address history. Individual transaction payloads are persisted as distinct observations; address-history pages are validated and returned live with provider provenance, but are not persisted. An offline, reproducible Isolation Forest training/evaluation pipeline is available for operator-supplied, labeled data; no real-world dataset has been trained or evaluated, the model is not connected to API scoring, and scores are not calibrated. Block ingestion, reorganization orchestration, streaming ingestion, Ethereum, and external threat-intelligence integrations remain future work. The deployed API's rule score is explicitly uncalibrated and must not be interpreted as a fraud probability.
 
 The planned system boundaries, trust assumptions, and project layout are described in [docs/architecture.md](docs/architecture.md). These are design targets, not claims about implemented controls.
 
@@ -104,6 +104,19 @@ python -m pytest
 
 Direct dependency versions are pinned in the requirements files; a generated transitive lockfile is still outstanding. The latest backend test run passed all 19 tests. Frontend typecheck and production build are also validated; the test suite uses an in-memory SQLite database and does not require Docker.
 
+### Offline ML baseline
+
+The training pipeline uses operator-provided Bitcoin transaction CSV data and does not download or fabricate a dataset. The CSV must contain `observed_at` (timezone-aware ISO 8601), unique 64-character hexadecimal `txid`, non-negative integer `input_count`, `output_count`, `output_total_satoshis`, and `fee_satoshis`, and `label` (`0` = not labeled suspicious, `1` = labeled suspicious; `0` is not proof of benign activity). Rows are split chronologically 80/20; Isolation Forest fits on the earlier unlabeled features and the later labels are used only for evaluation. Dataset source and license are mandatory metadata. The pipeline reports holdout average precision, precision, recall, F1, and confusion-matrix counts, but it does not calibrate scores, establish real-world model performance, or integrate model artifacts into API risk decisions.
+
+From the repository root in PowerShell, install the pinned ML dependency and run against a dataset whose source and permitted use you have verified:
+
+```powershell
+py -3.12 -m pip install -r ml/requirements.txt
+py -3.12 -m ml.train_iforest --dataset .\data\licensed-bitcoin.csv --dataset-source "Dataset name and citation" --dataset-license "License or permitted-use terms" --model-version "iforest-2026-01"
+```
+
+The command writes a compressed `joblib` artifact and a JSON provenance/evaluation report under `artifacts\ml`. The artifact is not loaded by the application; only load artifacts generated from trusted sources because loading untrusted `joblib` files can execute code. Do not treat test-fixture data or pipeline smoke-test metrics as model evidence. No real dataset, training run, calibration exercise, or deployed ML inference is included.
+
 ### Frontend
 
 With Node.js 22 installed, create the npm lockfile on first setup, then run the dashboard:
@@ -128,7 +141,7 @@ Set `BACKEND_API_URL=http://127.0.0.1:8000` in `frontend/.env.local` when launch
 | `backend/` | FastAPI application, initial identity models/API, migrations, and tests |
 | `frontend/` | Next.js analyst dashboard and case details |
 | `blockchain/` | Provider adapters and normalized chain data (planned) |
-| `ml/` | Reproducible feature, training, inference, and evaluation code (planned) |
+| `ml/` | Offline, provenance-recording Isolation Forest training and chronological evaluation baseline |
 | `tests/` | Unit, integration, and end-to-end tests (planned) |
 | `docs/` | Architecture, operations, data provenance, and limitations |
 | `infrastructure/` | Deployment and monitoring configuration (planned) |
@@ -142,7 +155,7 @@ Work is staged to keep each layer reviewable and verifiable:
 1. Repository setup, architecture, and development environment — **complete (not runtime-validated)**.
 2. FastAPI, PostgreSQL schema/migrations, and authentication — **login/session/bootstrap/admin invitation and user management implemented; MFA, password reset, and full RBAC remain**.
 3. Bitcoin ingestion and normalization — **individual transaction provider lookup, deduplication, observation history, and live paginated address-history lookup implemented; address pages are not persisted, while block ingestion and reorganization orchestration remain**.
-4. Risk analysis — **uncalibrated explainable rules baseline implemented; ML training, evaluation, and calibration remain**.
+4. Risk analysis — **uncalibrated explainable rules baseline and offline Isolation Forest training/evaluation pipeline implemented; real licensed dataset, evaluated model, API inference integration, and calibration remain**.
 5. Alerts, cases, notes, transaction links, evidence hashing/custody, and JSON case reports — **initial APIs implemented; broader workflow/report formats and supervisory review remain**.
 6. Next.js dashboard and transaction explorer — **initial API-connected dashboard and case details implemented; graph view and remaining analyst modules remain**.
 7. Graph exploration — **not implemented**.

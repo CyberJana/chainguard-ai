@@ -10,7 +10,7 @@ import {
 import {
   Cell, Pie, PieChart, ResponsiveContainer, Tooltip,
 } from "recharts";
-import { Alert, ApiError, api, BitcoinAddressHistory, CaseRecord, errorMessage, RiskAssessment, Transaction } from "@/lib/api";
+import { Alert, AlertFilters, ApiError, api, BitcoinAddressHistory, CaseRecord, errorMessage, RiskAssessment, Transaction } from "@/lib/api";
 import type { FormEvent, ReactNode } from "react";
 
 const PIE_COLORS: Record<Alert["severity"], string> = {
@@ -47,8 +47,24 @@ export default function DashboardPage() {
   const [risk, setRisk] = useState<RiskAssessment | null>(null);
   const [caseTitle, setCaseTitle] = useState("");
   const [notice, setNotice] = useState("");
+  const [alertStatus, setAlertStatus] = useState<Alert["status"] | "">("");
+  const [alertSeverity, setAlertSeverity] = useState<Alert["severity"] | "">("");
+  const [alertNetwork, setAlertNetwork] = useState("");
+  const [alertAssignment, setAlertAssignment] = useState("");
+  const [alertAssigneeId, setAlertAssigneeId] = useState("");
+  const [alertCreatedAfter, setAlertCreatedAfter] = useState("");
+  const [alertCreatedBefore, setAlertCreatedBefore] = useState("");
+  const alertFilters = useMemo<AlertFilters>(() => ({
+    ...(alertStatus ? { status: alertStatus } : {}),
+    ...(alertSeverity ? { severity: alertSeverity } : {}),
+    ...(alertNetwork ? { network: alertNetwork } : {}),
+    ...(alertAssignment === "unassigned" ? { unassigned: true } : {}),
+    ...(alertAssignment === "assigned" && alertAssigneeId ? { assigned_user_id: Number(alertAssigneeId) } : {}),
+    ...(alertCreatedAfter ? { created_after: new Date(alertCreatedAfter).toISOString() } : {}),
+    ...(alertCreatedBefore ? { created_before: new Date(alertCreatedBefore).toISOString() } : {}),
+  }), [alertAssignment, alertAssigneeId, alertCreatedAfter, alertCreatedBefore, alertNetwork, alertSeverity, alertStatus]);
   const me = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
-  const alertsQuery = useQuery({ queryKey: ["alerts"], queryFn: api.alerts, enabled: me.isSuccess });
+  const alertsQuery = useQuery({ queryKey: ["alerts", alertFilters], queryFn: () => api.alerts(alertFilters), enabled: me.isSuccess });
   const casesQuery = useQuery({ queryKey: ["cases"], queryFn: api.cases, enabled: me.isSuccess });
   const transactionsQuery = useQuery({ queryKey: ["transactions"], queryFn: api.transactions, enabled: me.isSuccess });
 
@@ -187,7 +203,7 @@ export default function DashboardPage() {
         {!loading && !dashboardError && (
           <>
             <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-              <StatCard label="Open alerts" value={alerts.filter((alert) => alert.status === "open").length} note="Current organization" icon={<AlertTriangle size={17} />} tone="amber" />
+              <StatCard label="Open alerts" value={alerts.filter((alert) => alert.status === "open").length} note="Matching alert filters" icon={<AlertTriangle size={17} />} tone="amber" />
               <StatCard label="Active cases" value={cases.filter((item) => item.status !== "closed").length} note="Open and in review" icon={<FolderKanban size={17} />} tone="blue" />
               <StatCard label="Stored transactions" value={transactions.length} note="Most recent 20" icon={<Blocks size={17} />} tone="teal" />
               <StatCard label="Critical alerts" value={alerts.filter((alert) => alert.severity === "critical").length} note="Analyst review required" icon={<Activity size={17} />} tone="violet" />
@@ -299,6 +315,53 @@ export default function DashboardPage() {
             <section id="alerts">
               <Card>
                 <div className="mb-4 flex items-center justify-between"><div><p className="label">Triage queue</p><h2 className="mt-1 text-lg font-semibold">Recent alerts</h2></div><AlertTriangle className="text-amber-300" size={18} /></div>
+                <div className="mb-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  <label className="text-xs text-slate-400">Status
+                    <select className="field mt-1" value={alertStatus} onChange={(event) => setAlertStatus(event.target.value as Alert["status"] | "")}>
+                      <option value="">All statuses</option>
+                      <option value="open">Open</option>
+                      <option value="acknowledged">Acknowledged</option>
+                      <option value="investigating">Investigating</option>
+                      <option value="dismissed">Dismissed</option>
+                      <option value="closed">Closed</option>
+                    </select>
+                  </label>
+                  <label className="text-xs text-slate-400">Severity
+                    <select className="field mt-1" value={alertSeverity} onChange={(event) => setAlertSeverity(event.target.value as Alert["severity"] | "")}>
+                      <option value="">All severities</option>
+                      <option value="medium">Medium</option>
+                      <option value="high">High</option>
+                      <option value="critical">Critical</option>
+                    </select>
+                  </label>
+                  <label className="text-xs text-slate-400">Blockchain
+                    <select className="field mt-1" value={alertNetwork} onChange={(event) => setAlertNetwork(event.target.value)}>
+                      <option value="">All supported chains</option>
+                      <option value="bitcoin">Bitcoin</option>
+                    </select>
+                  </label>
+                  <label className="text-xs text-slate-400">Assignment
+                    <select className="field mt-1" value={alertAssignment} onChange={(event) => setAlertAssignment(event.target.value)}>
+                      <option value="">All assignments</option>
+                      <option value="assigned">Assigned to user ID</option>
+                      <option value="unassigned">Unassigned</option>
+                    </select>
+                  </label>
+                  {alertAssignment === "assigned" && <label className="text-xs text-slate-400">Assignee user ID
+                    <input className="field mt-1" type="number" min="1" step="1" value={alertAssigneeId} onChange={(event) => setAlertAssigneeId(event.target.value)} placeholder="User ID" />
+                  </label>}
+                  <label className="text-xs text-slate-400">Created after
+                    <input className="field mt-1" type="datetime-local" value={alertCreatedAfter} onChange={(event) => setAlertCreatedAfter(event.target.value)} />
+                  </label>
+                  <label className="text-xs text-slate-400">Created before
+                    <input className="field mt-1" type="datetime-local" value={alertCreatedBefore} onChange={(event) => setAlertCreatedBefore(event.target.value)} />
+                  </label>
+                  <div className="flex items-end">
+                    <button className="button secondary" type="button" onClick={() => { setAlertStatus(""); setAlertSeverity(""); setAlertNetwork(""); setAlertAssignment(""); setAlertAssigneeId(""); setAlertCreatedAfter(""); setAlertCreatedBefore(""); }}>Clear filters</button>
+                  </div>
+                </div>
+                <p className="mb-3 text-xs text-slate-500">Filters are applied by the API within your organization; the list shows up to 100 matching alerts.</p>
+                {alertsQuery.isFetching && <p className="mb-3 text-xs text-sky-300" role="status">Updating alert results…</p>}
                 {alerts.length === 0 ? <EmptyState text="No alerts in this organization yet." /> : (
                   <div className="overflow-x-auto">
                     <table className="w-full min-w-[700px] text-left text-sm">

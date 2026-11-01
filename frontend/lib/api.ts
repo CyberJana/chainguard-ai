@@ -8,6 +8,16 @@ export type Alert = {
   created_at: string;
 };
 
+export type AlertFilters = {
+  status?: Alert["status"];
+  severity?: Alert["severity"];
+  network?: string;
+  assigned_user_id?: number;
+  unassigned?: boolean;
+  created_after?: string;
+  created_before?: string;
+};
+
 export type CaseRecord = {
   id: number;
   title: string;
@@ -96,7 +106,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 export const api = {
   me: () => request<{ id: number; email: string; role: string }>("/api/auth/me"),
   logout: () => request<void>("/api/auth/logout", { method: "POST" }),
-  alerts: () => request<Alert[]>("/api/proxy/alerts?limit=100"),
+  alerts: (filters: AlertFilters = {}) => {
+    const query = new URLSearchParams({ limit: "100" });
+    for (const [key, value] of Object.entries(filters)) {
+      if (value !== undefined && value !== "") query.set(key, String(value));
+    }
+    return request<Alert[]>(`/api/proxy/alerts?${query.toString()}`);
+  },
   cases: () => request<CaseRecord[]>("/api/proxy/cases?limit=100"),
   transactions: () => request<Transaction[]>("/api/proxy/transactions?limit=20"),
   lookupTransaction: (txid: string) =>

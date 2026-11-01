@@ -309,6 +309,86 @@ def test_risk_api_persists_assessment_and_creates_tenant_alert(client: TestClien
     assert alerts.json()[0]["severity"] == "high"
 
 
+def test_alert_filters_cover_network_assignment_status_severity_and_time(client: TestClient) -> None:
+    from app.models import RiskAssessment
+
+    assigned_id = None
+    with TestSession.begin() as db:
+        user = db.query(User).filter_by(email="analyst@example.com").one()
+        assigned_id = user.id
+        for index, (severity, status, assigned, created_at) in enumerate(
+            [
+                ("medium", "open", user.id, datetime(2024, 1, 2, tzinfo=timezone.utc)),
+                ("high", "acknowledged", None, datetime(2024, 1, 3, tzinfo=timezone.utc)),
+                ("critical", "open", user.id, datetime(2024, 1, 4, tzinfo=timezone.utc)),
+            ]
+        ):
+            transaction = BlockchainTransaction(
+                network="bitcoin",
+                txid=f"{index + 10:064x}",
+                raw_observation={},
+                source="test",
+            )
+            db.add(transaction)
+            db.flush()
+            assessment = RiskAssessment(
+                organization_id=user.organization_id,
+                transaction_id=transaction.id,
+                score=25 * (index + 1),
+                category=severity,
+                model_version=f"alert-test-{index}",
+                calibrated=False,
+                explanation=[],
+                recommendation="Review.",
+            )
+            db.add(assessment)
+            db.flush()
+            db.add(
+                Alert(
+                    organization_id=user.organization_id,
+                    transaction_id=transaction.id,
+                    risk_assessment_id=assessment.id,
+                    severity=severity,
+                    status=status,
+                    assigned_user_id=assigned,
+                    created_at=created_at,
+                    updated_at=created_at,
+                )
+            )
+    headers = {"Authorization": f"Bearer {token_for(client)}"}
+    response = client.get(
+        "/api/v1/alerts?network=bitcoin&severity=critical&status=open"
+        f"&assigned_user_id={assigned_id}&created_after=2024-01-03T00%3A00%3A00Z"
+        "&created_before=2024-01-05T00%3A00%3A00Z",
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+    assert response.json()[0]["severity"] == "critical"
+
+    unassigned = client.get("/api/v1/alerts?unassigned=true", headers=headers)
+    assert [alert["severity"] for alert in unassigned.json()] == ["high"]
+
+    conflict = client.get(
+        f"/api/v1/alerts?assigned_user_id={assigned_id}&unassigned=true",
+        headers=headers,
+    )
+    assert conflict.status_code == 422
+
+    naive_date = client.get(
+        "/api/v1/alerts?created_after=2024-01-02T00%3A00%3A00",
+        headers=headers,
+    )
+    assert naive_date.status_code == 422
+
+    reversed_range = client.get(
+        "/api/v1/alerts?created_after=2024-01-05T00%3A00%3A00Z"
+        "&created_before=2024-01-02T00%3A00%3A00Z",
+        headers=headers,
+    )
+    assert reversed_range.status_code == 422
+
+
 def test_case_and_evidence_are_tenant_scoped_and_integrity_checked(client: TestClient, tmp_path) -> None:
     owner_token = token_for(client)
     case_response = client.post(

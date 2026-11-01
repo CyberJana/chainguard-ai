@@ -430,6 +430,132 @@ def test_case_and_evidence_are_tenant_scoped_and_integrity_checked(client: TestC
     assert client.get("/api/v1/alerts", headers={"Authorization": f"Bearer {other_token}"}).json() == []
 
 
+def test_case_graph_uses_linked_observations_and_audits_access(client: TestClient) -> None:
+    from app.models import CaseTransaction
+
+    headers = {"Authorization": f"Bearer {token_for(client)}"}
+    case = client.post("/api/v1/cases", json={"title": "Graph investigation"}, headers=headers).json()
+    txid = "f" * 64
+    with TestSession.begin() as db:
+        transaction = BlockchainTransaction(
+            network="bitcoin",
+            txid=txid,
+            is_confirmed=True,
+            raw_observation={
+                "status": {"confirmed": True},
+                "vin": [
+                    {"prevout": {"scriptpubkey_address": "bc1qsource", "value": 700}},
+                    {"prevout": {"value": 100}},
+                    {"prevout": "malformed"},
+                    {"prevout": {"scriptpubkey_address": "invalid\naddress", "value": 5}},
+                ],
+                "vout": [
+                    {"scriptpubkey_address": "bc1qsource", "value": 300},
+                    {"scriptpubkey_address": "bc1qdestination", "value": 400},
+                    {"value": 50},
+                ],
+            },
+            source="test-provider",
+        )
+        db.add(transaction)
+        db.flush()
+        transaction_id = transaction.id
+
+    linked = client.post(
+        f"/api/v1/cases/{case['id']}/transactions",
+        json={"transaction_id": transaction_id},
+        headers=headers,
+    )
+    assert linked.status_code == 201
+    graph_response = client.get(f"/api/v1/cases/{case['id']}/graph", headers=headers)
+    assert graph_response.status_code == 200
+    graph = graph_response.json()
+    assert graph["transaction_count"] == 1
+    assert graph["truncated"] is False
+    assert len(graph["nodes"]) == 3
+    assert len(graph["edges"]) == 3
+    source = next(node for node in graph["nodes"] if node.get("address") == "bc1qsource")
+    assert source["direction"] == "both"
+    assert all("\n" not in node["label"] for node in graph["nodes"])
+    transaction_node = next(node for node in graph["nodes"] if node["kind"] == "transaction")
+    assert transaction_node["txid"] == txid
+    assert transaction_node["source"] == "test-provider"
+    assert transaction_node["observed_at"] is not None
+    assert transaction_node["is_confirmed"] is True
+    input_edge = next(edge for edge in graph["edges"] if edge["direction"] == "input")
+    output_edge = next(edge for edge in graph["edges"] if edge["direction"] == "output" and edge["target"] == source["id"])
+    assert input_edge["source"] == source["id"]
+    assert input_edge["target"] == transaction_node["id"]
+    assert input_edge["value_satoshis"] == 700
+    assert output_edge["source"] == transaction_node["id"]
+    assert output_edge["value_satoshis"] == 300
+    assert "do not establish common ownership" in " ".join(graph["limitations"])
+    with TestSession() as db:
+        audit = db.scalar(select(AuditLog).where(AuditLog.event_type == "case.graph_viewed"))
+        assert audit is not None
+        assert f'"case_id": {case["id"]}' in audit.details
+
+    with TestSession.begin() as db:
+        other_org = Organization(name="Graph Other Org")
+        db.add(other_org)
+        db.flush()
+        db.add(
+            User(
+                organization_id=other_org.id,
+                email="graph-other@example.com",
+                password_hash=hash_password(PASSWORD),
+                role=Role.ANALYST.value,
+            )
+        )
+    other_token = token_for(client, "graph-other@example.com")
+    denied = client.get(
+        f"/api/v1/cases/{case['id']}/graph",
+        headers={"Authorization": f"Bearer {other_token}"},
+    )
+    assert denied.status_code == 404
+
+
+def test_case_graph_bounds_transactions_nodes_and_edges(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.models import CaseTransaction
+    from app.routes import cases as case_routes
+
+    monkeypatch.setattr(case_routes, "MAX_GRAPH_TRANSACTIONS", 1)
+    monkeypatch.setattr(case_routes, "MAX_GRAPH_NODES", 3)
+    monkeypatch.setattr(case_routes, "MAX_GRAPH_EDGES", 1)
+    headers = {"Authorization": f"Bearer {token_for(client)}"}
+    case = client.post("/api/v1/cases", json={"title": "Bounded graph"}, headers=headers).json()
+    with TestSession.begin() as db:
+        user = db.query(User).filter_by(email="analyst@example.com").one()
+        for index in range(2):
+            transaction = BlockchainTransaction(
+                network="bitcoin",
+                txid=f"{index + 1:064x}",
+                raw_observation={
+                    "vin": [{"prevout": {"scriptpubkey_address": f"bc1qinput{index}"}}],
+                    "vout": [{"scriptpubkey_address": f"bc1qoutput{index}"}],
+                },
+                source="test-provider",
+            )
+            db.add(transaction)
+            db.flush()
+            db.add(
+                CaseTransaction(
+                    organization_id=user.organization_id,
+                    case_id=case["id"],
+                    transaction_id=transaction.id,
+                    linked_by_user_id=user.id,
+                )
+            )
+
+    response = client.get(f"/api/v1/cases/{case['id']}/graph", headers=headers)
+    assert response.status_code == 200
+    graph = response.json()
+    assert graph["transaction_count"] == 1
+    assert len(graph["nodes"]) <= 3
+    assert len(graph["edges"]) <= 1
+    assert graph["truncated"] is True
+
+
 def test_case_csv_report_contains_provenance_and_escapes_spreadsheet_formulas(client: TestClient) -> None:
     headers = {"Authorization": f"Bearer {token_for(client)}"}
     created_case = client.post(

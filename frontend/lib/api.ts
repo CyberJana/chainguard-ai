@@ -28,6 +28,32 @@ export type CaseRecord = {
   updated_at: string;
 };
 
+export type CaseGraph = {
+  case_id: number;
+  nodes: {
+    id: string;
+    kind: "transaction" | "address";
+    label: string;
+    txid: string | null;
+    address: string | null;
+    network: string | null;
+    source: string | null;
+    observed_at: string | null;
+    is_confirmed: boolean | null;
+    direction: "input" | "output" | "both" | null;
+  }[];
+  edges: {
+    id: string;
+    source: string;
+    target: string;
+    direction: "input" | "output";
+    value_satoshis: number | null;
+  }[];
+  transaction_count: number;
+  truncated: boolean;
+  limitations: string[];
+};
+
 export type Transaction = {
   id: number;
   network: string;
@@ -130,6 +156,7 @@ export const api = {
   updateAlert: (id: number, status: Alert["status"]) =>
     request<Alert>(`/api/proxy/alerts/${id}`, { method: "PATCH", body: JSON.stringify({ status }) }),
   caseById: (id: number) => request<CaseRecord>(`/api/proxy/cases/${id}`),
+  caseGraph: (id: number) => request<CaseGraph>(`/api/proxy/cases/${id}/graph`),
   caseEvents: (id: number) => request<{ id: number; user_id: number; event_type: string; details: string; created_at: string }[]>(`/api/proxy/cases/${id}/events`),
   caseEvidence: (id: number) => request<{ id: number; filename: string; sha256: string; byte_size: number; source_provenance: string; created_at: string }[]>(`/api/proxy/cases/${id}/evidence`),
   addCaseNote: (id: number, content: string) =>

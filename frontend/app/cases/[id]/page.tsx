@@ -1,11 +1,15 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ArrowLeft, Download, FileCheck2, FilePlus2, FileSpreadsheet, FileText, ShieldCheck } from "lucide-react";
+import { Background, Controls, MarkerType, MiniMap, ReactFlow } from "@xyflow/react";
 import { ApiError, api, errorMessage } from "@/lib/api";
-import type { ChangeEvent, FormEvent } from "react";
+import type { ChangeEvent, FormEvent, ReactNode } from "react";
+import type { Edge as FlowEdge, Node as FlowNode } from "@xyflow/react";
+
+type CaseFlowNode = FlowNode<{ label: ReactNode }>;
 
 export default function CaseDetailPage() {
   const params = useParams<{ id: string }>();
@@ -18,8 +22,59 @@ export default function CaseDetailPage() {
   const [notice, setNotice] = useState("");
   const profile = useQuery({ queryKey: ["me"], queryFn: api.me, retry: false });
   const caseQuery = useQuery({ queryKey: ["case", caseId], queryFn: () => api.caseById(caseId), enabled: Number.isSafeInteger(caseId) && caseId > 0 });
+  const graphQuery = useQuery({ queryKey: ["case-graph", caseId], queryFn: () => api.caseGraph(caseId), enabled: caseQuery.isSuccess });
   const eventsQuery = useQuery({ queryKey: ["case-events", caseId], queryFn: () => api.caseEvents(caseId), enabled: caseQuery.isSuccess });
   const evidenceQuery = useQuery({ queryKey: ["case-evidence", caseId], queryFn: () => api.caseEvidence(caseId), enabled: caseQuery.isSuccess });
+  const flowGraph = useMemo(() => {
+    const graph = graphQuery.data;
+    if (!graph) return { nodes: [] as CaseFlowNode[], edges: [] as FlowEdge[] };
+    const positions = { input: 0, output: 0, both: 0, transaction: 0 };
+    const nodes: CaseFlowNode[] = graph.nodes.map((node) => {
+      const direction = node.kind === "transaction" ? "transaction" : node.direction ?? "both";
+      const column = positions[direction]++;
+      const x = direction === "input" ? 20 : direction === "transaction" ? 360 : 700;
+      const displayLabel = node.kind === "transaction"
+        ? `${node.label.slice(0, 12)}…`
+        : node.label.length > 24 ? `${node.label.slice(0, 12)}…${node.label.slice(-6)}` : node.label;
+      const detail = node.kind === "transaction"
+        ? `${node.network ?? "Unknown network"} · ${node.source ?? "Unknown source"} · ${node.is_confirmed === true ? "confirmed" : node.is_confirmed === false ? "unconfirmed" : "confirmation unknown"}${node.observed_at ? ` · ${new Date(node.observed_at).toLocaleString()}` : ""}`
+        : `Observed script address · ${direction}`;
+      return {
+        id: node.id,
+        position: { x, y: 30 + column * 100 },
+        data: {
+          label: (
+            <span title={node.label} className="block min-w-0">
+              <span className="block truncate">{displayLabel}</span>
+              <span className="mt-1 block truncate text-[10px] text-slate-400">{detail}</span>
+            </span>
+          ),
+        },
+        style: {
+          width: 190,
+          padding: 10,
+          borderRadius: 9,
+          border: `1px solid ${node.kind === "transaction" ? "#318bd3" : direction === "input" ? "#35d0bd" : "#b88cff"}`,
+          background: node.kind === "transaction" ? "#142130" : "#0c151f",
+          color: "#e6edf5",
+          fontSize: 12,
+        },
+        ariaLabel: `${detail}: ${node.label}`,
+      };
+    });
+    const edges: FlowEdge[] = graph.edges.map((edge) => ({
+      id: edge.id,
+      source: edge.source,
+      target: edge.target,
+      type: "smoothstep",
+      label: edge.value_satoshis === null ? undefined : `${edge.value_satoshis.toLocaleString()} sat`,
+      markerEnd: { type: MarkerType.ArrowClosed, color: edge.direction === "input" ? "#35d0bd" : "#b88cff" },
+      style: { stroke: edge.direction === "input" ? "#35d0bd" : "#b88cff", strokeWidth: 1.5 },
+      labelStyle: { fill: "#94a3b8", fontSize: 10 },
+      labelBgStyle: { fill: "#0b141e" },
+    }));
+    return { nodes, edges };
+  }, [graphQuery.data]);
 
   useEffect(() => {
     if (profile.error instanceof ApiError && profile.error.status === 401) router.replace("/login");
@@ -157,6 +212,54 @@ export default function CaseDetailPage() {
             <button type="submit" className="button" disabled={evidenceMutation.isPending || !file || !provenance.trim()}><FilePlus2 size={15} />{evidenceMutation.isPending ? "Uploading..." : "Upload evidence"}</button>
           </form>
         </article>
+      </section>
+
+      <section className="panel p-5">
+        <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <p className="label">Case-scoped transaction graph</p>
+            <h2 className="mt-1 text-lg font-semibold">Observed address connections</h2>
+            <p className="mt-1 text-sm text-slate-400">Only transactions linked to this case are shown; no additional hops are fetched.</p>
+          </div>
+          {graphQuery.isSuccess && <span className="text-xs text-slate-500">{graphQuery.data.nodes.length} nodes · {graphQuery.data.edges.length} observed flows</span>}
+        </div>
+        <p className="mb-4 rounded-lg border border-amber-400/20 bg-amber-400/5 px-3 py-2 text-sm text-amber-100">
+          Address connectivity does not establish common ownership or real-world attribution.
+        </p>
+        {graphQuery.isPending ? (
+          <p className="rounded-lg border border-dashed border-slate-700 px-4 py-10 text-center text-sm text-slate-500">Loading case graph...</p>
+        ) : graphQuery.error ? (
+          <div role="alert" className="rounded-lg border border-rose-400/20 bg-rose-400/5 p-4 text-sm text-rose-200">
+            <p>Could not load the case graph: {errorMessage(graphQuery.error)}</p>
+            <button type="button" className="button secondary mt-3" onClick={() => void graphQuery.refetch()}>Retry</button>
+          </div>
+        ) : graphQuery.data.nodes.length === 0 ? (
+          <p className="rounded-lg border border-dashed border-slate-700 px-4 py-10 text-center text-sm text-slate-500">No transactions are linked to this case yet. Link a transaction to build a graph from its recorded provider observation.</p>
+        ) : (
+          <>
+            {graphQuery.data.truncated && <p role="status" className="mb-3 text-sm text-amber-200">This graph reached a display limit and is truncated. Review the linked transactions and query again as needed.</p>}
+            <div className="h-[520px] overflow-hidden rounded-lg border border-slate-800 bg-[#0b141e]">
+              <ReactFlow
+                nodes={flowGraph.nodes}
+                edges={flowGraph.edges}
+                fitView
+                fitViewOptions={{ padding: 0.2 }}
+                minZoom={0.2}
+                maxZoom={1.5}
+                nodesDraggable={false}
+                nodesConnectable={false}
+                proOptions={{ hideAttribution: true }}
+              >
+                <Background color="#294052" gap={22} />
+                <MiniMap nodeColor={(node) => node.id.startsWith("transaction:") ? "#318bd3" : "#35d0bd"} maskColor="rgb(9 15 23 / 70%)" />
+                <Controls />
+              </ReactFlow>
+            </div>
+            <ul className="mt-3 space-y-1 text-xs text-slate-500">
+              {graphQuery.data.limitations.map((limitation) => <li key={limitation}>• {limitation}</li>)}
+            </ul>
+          </>
+        )}
       </section>
 
       <section className="panel p-5">

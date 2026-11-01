@@ -27,7 +27,14 @@ from app.models import (
     InvestigationCase,
     User,
 )
-from app.schemas_cases import CaseCreate, CaseResponse, CaseTransactionRequest, CaseUpdate, NoteCreate
+from app.schemas_cases import (
+    CaseCreate,
+    CaseGraphResponse,
+    CaseResponse,
+    CaseTransactionRequest,
+    CaseUpdate,
+    NoteCreate,
+)
 
 router = APIRouter(prefix="/api/v1/cases", tags=["investigations"])
 DbSession = Annotated[Session, Depends(get_db)]
@@ -60,6 +67,9 @@ CASE_REPORT_CSV_COLUMNS = (
     "evidence_id",
     "action",
 )
+MAX_GRAPH_TRANSACTIONS = 25
+MAX_GRAPH_NODES = 250
+MAX_GRAPH_EDGES = 500
 
 
 def get_case(db: Session, case_id: int, organization_id: int) -> InvestigationCase:
@@ -194,6 +204,160 @@ def link_transaction(
     db.add(AuditLog(organization_id=user.organization_id, user_id=user.id, event_type="case.transaction_linked", details=f"case_id={case.id}; transaction_id={transaction.id}"))
     db.commit()
     return {"case_id": case.id, "transaction_id": transaction.id}
+
+
+@router.get("/{case_id}/graph", response_model=CaseGraphResponse)
+def read_case_graph(case_id: int, user: CurrentUser, db: DbSession) -> CaseGraphResponse:
+    case = get_case(db, case_id, user.organization_id)
+    transactions = list(
+        db.scalars(
+            select(BlockchainTransaction)
+            .join(CaseTransaction, CaseTransaction.transaction_id == BlockchainTransaction.id)
+            .where(
+                CaseTransaction.case_id == case.id,
+                CaseTransaction.organization_id == user.organization_id,
+            )
+            .order_by(BlockchainTransaction.id)
+            .limit(MAX_GRAPH_TRANSACTIONS + 1)
+        )
+    )
+    truncated = len(transactions) > MAX_GRAPH_TRANSACTIONS
+    transactions = transactions[:MAX_GRAPH_TRANSACTIONS]
+    nodes: dict[str, dict] = {}
+    edges: list[dict] = []
+
+    def add_address_node(address: object, direction: str) -> str | None:
+        nonlocal truncated
+        if (
+            not isinstance(address, str)
+            or not address
+            or len(address) > 128
+            or any(ord(character) < 33 or ord(character) > 126 for character in address)
+        ):
+            return None
+        node_id = f"address:{address}"
+        existing = nodes.get(node_id)
+        if existing is not None:
+            if existing["direction"] != direction:
+                existing["direction"] = "both"
+            return node_id
+        if len(nodes) >= MAX_GRAPH_NODES:
+            truncated = True
+            return None
+        nodes[node_id] = {
+            "id": node_id,
+            "kind": "address",
+            "label": address,
+            "address": address,
+            "direction": direction,
+        }
+        return node_id
+
+    def add_edge(edge: dict) -> None:
+        nonlocal truncated
+        if len(edges) >= MAX_GRAPH_EDGES:
+            truncated = True
+            return
+        edges.append(edge)
+
+    for transaction in transactions:
+        transaction_node_id = f"transaction:{transaction.txid}"
+        observation = transaction.raw_observation
+        status_data = observation.get("status", {}) if isinstance(observation, dict) else {}
+        nodes[transaction_node_id] = {
+            "id": transaction_node_id,
+            "kind": "transaction",
+            "label": transaction.txid,
+            "txid": transaction.txid,
+            "network": transaction.network,
+            "source": transaction.source,
+            "observed_at": transaction.observed_at,
+            "is_confirmed": status_data.get("confirmed") if isinstance(status_data, dict) and isinstance(status_data.get("confirmed"), bool) else None,
+        }
+
+    for transaction in transactions:
+        transaction_node_id = f"transaction:{transaction.txid}"
+        observation = transaction.raw_observation
+        if len(edges) >= MAX_GRAPH_EDGES:
+            truncated = True
+            break
+        inputs = observation.get("vin", []) if isinstance(observation, dict) else []
+        if isinstance(inputs, list):
+            for index, item in enumerate(inputs):
+                if len(edges) >= MAX_GRAPH_EDGES:
+                    truncated = True
+                    break
+                if not isinstance(item, dict):
+                    continue
+                prevout = item.get("prevout")
+                if not isinstance(prevout, dict):
+                    continue
+                source_id = add_address_node(prevout.get("scriptpubkey_address"), "input")
+                if source_id is None:
+                    continue
+                value = prevout.get("value")
+                add_edge(
+                    {
+                        "id": f"input:{transaction.txid}:{index}",
+                        "source": source_id,
+                        "target": transaction_node_id,
+                        "direction": "input",
+                        "value_satoshis": value if type(value) is int and value >= 0 else None,
+                    }
+                )
+
+        outputs = observation.get("vout", []) if isinstance(observation, dict) else []
+        if isinstance(outputs, list):
+            for index, item in enumerate(outputs):
+                if len(edges) >= MAX_GRAPH_EDGES:
+                    truncated = True
+                    break
+                if not isinstance(item, dict):
+                    continue
+                target_id = add_address_node(item.get("scriptpubkey_address"), "output")
+                if target_id is None:
+                    continue
+                value = item.get("value")
+                add_edge(
+                    {
+                        "id": f"output:{transaction.txid}:{index}",
+                        "source": transaction_node_id,
+                        "target": target_id,
+                        "direction": "output",
+                        "value_satoshis": value if type(value) is int and value >= 0 else None,
+                    }
+                )
+
+    db.add(
+        AuditLog(
+            organization_id=user.organization_id,
+            user_id=user.id,
+            event_type="case.graph_viewed",
+            details=json.dumps(
+                {
+                    "case_id": case.id,
+                    "transactions": len(transactions),
+                    "nodes": len(nodes),
+                    "edges": len(edges),
+                    "truncated": truncated,
+                },
+                sort_keys=True,
+            ),
+        )
+    )
+    db.commit()
+    return CaseGraphResponse(
+        case_id=case.id,
+        nodes=list(nodes.values()),
+        edges=edges,
+        transaction_count=len(transactions),
+        truncated=truncated,
+        limitations=[
+            "Graph contains only transactions already linked to this case; it does not fetch additional hops.",
+            "Addresses are script-level identifiers and do not establish common ownership or real-world attribution.",
+            "Missing provider input/output address data is omitted rather than inferred.",
+        ],
+    )
 
 
 @router.post("/{case_id}/notes", status_code=201)

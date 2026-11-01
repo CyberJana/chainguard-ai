@@ -36,5 +36,35 @@ class CaseTransactionRequest(BaseModel):
     transaction_id: int = Field(ge=1)
 
 
+class CaseGraphNode(BaseModel):
+    id: str
+    kind: Literal["transaction", "address"]
+    label: str
+    txid: str | None = None
+    address: str | None = None
+    network: str | None = None
+    source: str | None = None
+    observed_at: datetime | None = None
+    is_confirmed: bool | None = None
+    direction: Literal["input", "output", "both"] | None = None
+
+
+class CaseGraphEdge(BaseModel):
+    id: str
+    source: str
+    target: str
+    direction: Literal["input", "output"]
+    value_satoshis: int | None = None
+
+
+class CaseGraphResponse(BaseModel):
+    case_id: int
+    nodes: list[CaseGraphNode]
+    edges: list[CaseGraphEdge]
+    transaction_count: int
+    truncated: bool
+    limitations: list[str]
+
+
 class NoteCreate(BaseModel):
     content: str = Field(min_length=1, max_length=20_000)

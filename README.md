@@ -2,7 +2,7 @@
 
 ChainGuard AI is planned as a blockchain transaction monitoring, risk triage, and digital-forensics investigation platform. It is intended to analyze public blockchain information; it will not custody funds or request wallet seed phrases.
 
-> **Implementation status:** The repository includes an initial FastAPI/PostgreSQL backend for identity, Bitcoin transaction and live address-history lookups, uncalibrated rule-based risk triage, alerts, investigation cases, and SHA-256-verified evidence uploads. MFA, Ethereum, graph workflows, trained/calibrated models, rate limiting, and production hardening are not complete. This is not production-ready and must not be used for operational investigations or decisions.
+> **Implementation status:** The repository includes an initial FastAPI/PostgreSQL backend for identity, Bitcoin transaction and live address-history lookups, uncalibrated rule-based risk triage, alerts, investigation cases, SHA-256-verified evidence uploads, and a bounded case-scoped transaction graph. MFA, Ethereum, trained/calibrated models, rate limiting, and production hardening are not complete. This is not production-ready and must not be used for operational investigations or decisions.
 
 ## Planned capabilities
 
@@ -76,7 +76,8 @@ The authenticated API currently also exposes:
 | `GET /api/v1/addresses/bitcoin/{address}` | Fetch live address totals and a 25-transaction history page; pass `cursor` for older pages |
 | `POST /api/v1/risk/analyze` | Analyze an ingested transaction using explicitly uncalibrated rules |
 | `GET /api/v1/alerts` / `PATCH /api/v1/alerts/{id}` | Organization-scoped alert triage; filter by status, severity, network, assignee, and timezone-aware creation range |
-| `/api/v1/cases` | Organization-scoped case CRUD, notes, transaction links, events, and JSON/CSV reports |
+| `/api/v1/cases` | Organization-scoped case CRUD, notes, transaction links, events, JSON/CSV reports, and bounded graph from linked transaction observations |
+| `GET /api/v1/cases/{id}/graph` | Audited case graph with directional address-to-transaction flows; capped at 25 transactions, 250 total nodes, and 500 edges |
 | `/api/v1/cases/{id}/evidence` | Upload/list case evidence; uploads are limited to 10 MiB |
 | `/api/v1/cases/{id}/evidence/{evidence_id}/download` | Verify SHA-256 before attachment download and record custody event |
 
@@ -128,7 +129,7 @@ npm install
 npm run dev
 ```
 
-Set `BACKEND_API_URL=http://127.0.0.1:8000` in `frontend/.env.local` when launching Next.js from the host. Sign-in is proxied through Next.js, and the opaque API token is held in an HttpOnly, SameSite=Strict cookie rather than browser storage. The UI currently covers login, transaction lookup/risk, alert triage, case creation/details, notes, evidence upload/download, and JSON report export.
+Set `BACKEND_API_URL=http://127.0.0.1:8000` in `frontend/.env.local` when launching Next.js from the host. Sign-in is proxied through Next.js, and the opaque API token is held in an HttpOnly, SameSite=Strict cookie rather than browser storage. The UI currently covers login, transaction lookup/risk, alert triage, case creation/details, notes, evidence upload/download, JSON/CSV report export, and interactive case-scoped graph exploration.
 
 ### Configuration
 
@@ -157,8 +158,8 @@ Work is staged to keep each layer reviewable and verifiable:
 3. Bitcoin ingestion and normalization — **individual transaction provider lookup, deduplication, observation history, and live paginated address-history lookup implemented; address pages are not persisted, while block ingestion and reorganization orchestration remain**.
 4. Risk analysis — **uncalibrated explainable rules baseline and offline Isolation Forest training/evaluation pipeline implemented; real licensed dataset, evaluated model, API inference integration, and calibration remain**.
 5. Alerts, cases, notes, transaction links, evidence hashing/custody, and case reports — **initial APIs implemented; alert filters cover network, status, severity, assignment, and creation time; JSON and CSV reports include provenance and custody records; PDF reports, notifications, and supervisory review remain**.
-6. Next.js dashboard and transaction explorer — **initial API-connected dashboard and case details implemented; graph view and remaining analyst modules remain**.
-7. Graph exploration — **not implemented**.
+6. Next.js dashboard and transaction explorer — **initial API-connected dashboard, case details, and case-scoped interactive graph implemented; remaining analyst modules remain**.
+7. Graph exploration — **initial case-scoped Bitcoin graph implemented from already-linked raw observations, with bounded output, audited access, and no ownership/identity attribution; multi-hop exploration and Ethereum remain**.
 8. Ethereum and reviewed threat-intelligence integrations — **not implemented**.
 9. Automated testing, security hardening, observability, and performance work — **focused tests and CI added; runtime checks and broader coverage remain**.
 10. Deployment preparation and operational documentation — **local Compose setup only; production deployment and backup/restore remain**.

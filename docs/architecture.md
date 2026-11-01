@@ -23,6 +23,8 @@ Alert listing supports server-side filters for status, severity, network, assign
 
 JSON and CSV case reports use the same tenant-scoped report data, include provider observations, analyst notes, evidence hashes/provenance, activity, and chain-of-custody events, and record export format in the audit log. CSV cells beginning with spreadsheet formula characters are prefixed to reduce formula-injection risk; CSV is a convenience export, not a signed or tamper-evident forensic package.
 
+The case graph endpoint reads only raw provider observations for transactions already linked to the requested organization-scoped case. It models observed input `prevout.scriptpubkey_address` values as address-to-transaction edges and output `scriptpubkey_address` values as transaction-to-address edges. Transaction nodes retain their provider source and observation timestamp. Results are capped at 25 transactions, 250 total nodes, and 500 edges; missing or malformed address fields are omitted, and graph access is audit logged. Connectivity is not evidence of common ownership or real-world attribution, and the graph does not discover additional hops or persist a separate graph projection.
+
 ## Data flow
 
 1. A configured provider adapter retrieves public chain data or a background job accepts a requested lookup.

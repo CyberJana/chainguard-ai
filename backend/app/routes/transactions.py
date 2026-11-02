@@ -9,9 +9,16 @@ from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.dependencies import CurrentUser
-from app.models import Alert, AuditLog, BlockchainTransaction, RiskAssessment
-from app.schemas import BitcoinAddressHistoryResponse, RiskRequest, RiskResponse, TransactionResponse
+from app.models import Alert, AuditLog, BlockchainTransaction, EthereumTransaction, RiskAssessment
+from app.schemas import (
+    BitcoinAddressHistoryResponse,
+    EthereumTransactionResponse,
+    RiskRequest,
+    RiskResponse,
+    TransactionResponse,
+)
 from app.services.bitcoin import fetch_bitcoin_address_history, ingest_bitcoin_transaction
+from app.services.ethereum import TX_HASH_PATTERN as ETHEREUM_TX_HASH_PATTERN, ingest_ethereum_transaction
 from app.services.risk import MODEL_VERSION, assess_bitcoin_transaction
 
 router = APIRouter(prefix="/api/v1", tags=["blockchain"])
@@ -48,6 +55,28 @@ def lookup_bitcoin_transaction(txid: str, user: CurrentUser, db: DbSession) -> B
             user_id=user.id,
             event_type="transaction.lookup",
             details=f"bitcoin:{transaction.txid}",
+        )
+    )
+    db.commit()
+    db.refresh(transaction)
+    return transaction
+
+
+@router.get("/transactions/ethereum/{tx_hash}", response_model=EthereumTransactionResponse)
+def lookup_ethereum_transaction(
+    tx_hash: str,
+    user: CurrentUser,
+    db: DbSession,
+) -> EthereumTransaction:
+    if not ETHEREUM_TX_HASH_PATTERN.fullmatch(tx_hash):
+        raise HTTPException(status_code=422, detail="Invalid Ethereum transaction hash")
+    transaction = ingest_ethereum_transaction(db, tx_hash)
+    db.add(
+        AuditLog(
+            organization_id=user.organization_id,
+            user_id=user.id,
+            event_type="transaction.lookup",
+            details=f"ethereum:{transaction.chain_id}:{transaction.tx_hash}",
         )
     )
     db.commit()

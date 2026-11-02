@@ -68,6 +68,25 @@ export type Transaction = {
   observed_at: string;
 };
 
+export type EthereumTransaction = {
+  id: number;
+  chain_id: number;
+  tx_hash: string;
+  block_number: number | null;
+  block_hash: string | null;
+  receipt_status: "success" | "reverted" | null;
+  from_address: string;
+  to_address: string | null;
+  value_wei: string;
+  gas_limit: number;
+  gas_used: number | null;
+  effective_gas_price_wei: string | null;
+  raw_observation: Record<string, unknown>;
+  source: string;
+  observed_at: string;
+  updated_at: string;
+};
+
 export type BitcoinAddressStats = {
   funded_txo_count: number;
   funded_txo_sum: number;
@@ -141,8 +160,10 @@ export const api = {
   },
   cases: () => request<CaseRecord[]>("/api/proxy/cases?limit=100"),
   transactions: () => request<Transaction[]>("/api/proxy/transactions?limit=20"),
-  lookupTransaction: (txid: string) =>
-    request<Transaction>(`/api/proxy/transactions/bitcoin/${encodeURIComponent(txid)}`),
+  lookupTransaction: (txid: string, network: "bitcoin" | "ethereum" = "bitcoin") =>
+    network === "ethereum"
+      ? request<EthereumTransaction>(`/api/proxy/transactions/ethereum/${encodeURIComponent(txid)}`)
+      : request<Transaction>(`/api/proxy/transactions/bitcoin/${encodeURIComponent(txid)}`),
   lookupBitcoinAddress: (address: string, cursor?: string) => {
     const query = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
     return request<BitcoinAddressHistory>(

@@ -135,6 +135,44 @@ class TransactionObservation(Base):
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
 
 
+class EthereumTransaction(Base):
+    __tablename__ = "ethereum_transactions"
+    __table_args__ = (
+        UniqueConstraint("chain_id", "tx_hash", name="uq_ethereum_chain_tx_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    chain_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tx_hash: Mapped[str] = mapped_column(String(66), nullable=False, index=True)
+    block_number: Mapped[int | None] = mapped_column(BigInteger)
+    block_hash: Mapped[str | None] = mapped_column(String(66))
+    receipt_status: Mapped[str | None] = mapped_column(String(16))
+    from_address: Mapped[str] = mapped_column(String(42), nullable=False)
+    to_address: Mapped[str | None] = mapped_column(String(42))
+    value_wei: Mapped[str] = mapped_column(String(78), nullable=False)
+    gas_limit: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    gas_used: Mapped[int | None] = mapped_column(BigInteger)
+    effective_gas_price_wei: Mapped[str | None] = mapped_column(String(78))
+    raw_observation: Mapped[dict] = mapped_column(JSON, nullable=False)
+    source: Mapped[str] = mapped_column(String(200), nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now, nullable=False)
+
+
+class EthereumTransactionObservation(Base):
+    __tablename__ = "ethereum_transaction_observations"
+    __table_args__ = (
+        UniqueConstraint("transaction_id", "observation_hash", name="uq_ethereum_observation_hash"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    transaction_id: Mapped[int] = mapped_column(ForeignKey("ethereum_transactions.id", ondelete="CASCADE"), nullable=False, index=True)
+    observation_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    provider: Mapped[str] = mapped_column(String(200), nullable=False)
+    payload: Mapped[dict] = mapped_column(JSON, nullable=False)
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, nullable=False)
+
+
 class RiskAssessment(Base):
     __tablename__ = "risk_assessments"
     __table_args__ = (

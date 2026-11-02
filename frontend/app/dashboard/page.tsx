@@ -10,7 +10,7 @@ import {
 import {
   Cell, Pie, PieChart, ResponsiveContainer, Tooltip,
 } from "recharts";
-import { Alert, AlertFilters, ApiError, api, BitcoinAddressHistory, CaseRecord, errorMessage, RiskAssessment, Transaction } from "@/lib/api";
+import { Alert, AlertFilters, ApiError, api, BitcoinAddressHistory, CaseRecord, errorMessage, EthereumTransaction, RiskAssessment, Transaction } from "@/lib/api";
 import type { FormEvent, ReactNode } from "react";
 
 const PIE_COLORS: Record<Alert["severity"], string> = {
@@ -40,8 +40,9 @@ function severityTone(severity: Alert["severity"]): "amber" | "red" {
 export default function DashboardPage() {
   const router = useRouter();
   const queryClient = useQueryClient();
+  const [lookupNetwork, setLookupNetwork] = useState<"bitcoin" | "ethereum">("bitcoin");
   const [txid, setTxid] = useState("");
-  const [transaction, setTransaction] = useState<Transaction | null>(null);
+  const [transaction, setTransaction] = useState<Transaction | EthereumTransaction | null>(null);
   const [address, setAddress] = useState("");
   const [addressHistory, setAddressHistory] = useState<BitcoinAddressHistory | null>(null);
   const [risk, setRisk] = useState<RiskAssessment | null>(null);
@@ -72,8 +73,9 @@ export default function DashboardPage() {
     if (me.error instanceof ApiError && me.error.status === 401) router.replace("/login");
   }, [me.error, router]);
 
-  const lookup = useMutation({
-    mutationFn: api.lookupTransaction,
+  const lookup = useMutation<Transaction | EthereumTransaction, Error, { txHash: string; network: "bitcoin" | "ethereum" }>({
+    mutationFn: ({ txHash, network }: { txHash: string; network: "bitcoin" | "ethereum" }) =>
+      api.lookupTransaction(txHash, network),
     onSuccess: (result) => {
       setTransaction(result);
       setRisk(null);
@@ -134,7 +136,7 @@ export default function DashboardPage() {
     setNotice("");
     setTransaction(null);
     setRisk(null);
-    lookup.mutate(txid.trim());
+    lookup.mutate({ txHash: txid.trim(), network: lookupNetwork });
   }
 
   async function submitCase(event: FormEvent<HTMLFormElement>) {
@@ -212,29 +214,75 @@ export default function DashboardPage() {
             <section className="grid gap-5 xl:grid-cols-[1.4fr_0.8fr]">
               <Card>
                 <div className="mb-5 flex items-center justify-between">
-                  <div><p className="label">Bitcoin explorer</p><h2 className="mt-1 text-lg font-semibold">Investigate a transaction</h2></div>
+                  <div><p className="label">Public-chain explorer</p><h2 className="mt-1 text-lg font-semibold">Investigate a transaction</h2></div>
                   <FileSearch className="text-slate-500" size={19} />
                 </div>
                 <form onSubmit={submitLookup} className="flex flex-col gap-3 sm:flex-row">
-                  <label className="sr-only" htmlFor="txid">Bitcoin transaction ID</label>
-                  <input id="txid" className="field font-mono text-sm" placeholder="64-character transaction ID" minLength={64} maxLength={64} pattern="[a-fA-F0-9]{64}" required value={txid} onChange={(event) => setTxid(event.target.value)} />
+                  <label className="sr-only" htmlFor="lookup-network">Blockchain network</label>
+                  <select
+                    id="lookup-network"
+                    className="field sm:max-w-40"
+                    value={lookupNetwork}
+                    onChange={(event) => {
+                      setLookupNetwork(event.target.value as "bitcoin" | "ethereum");
+                      setTransaction(null);
+                      setRisk(null);
+                    }}
+                  >
+                    <option value="bitcoin">Bitcoin</option>
+                    <option value="ethereum">Ethereum</option>
+                  </select>
+                  <label className="sr-only" htmlFor="txid">{lookupNetwork === "bitcoin" ? "Bitcoin transaction ID" : "Ethereum transaction hash"}</label>
+                  <input
+                    id="txid"
+                    className="field min-w-0 flex-1 font-mono text-sm"
+                    placeholder={lookupNetwork === "bitcoin" ? "64-character transaction ID" : "0x followed by 64 hexadecimal characters"}
+                    minLength={lookupNetwork === "bitcoin" ? 64 : 66}
+                    maxLength={lookupNetwork === "bitcoin" ? 64 : 66}
+                    pattern={lookupNetwork === "bitcoin" ? "[a-fA-F0-9]{64}" : "0x[a-fA-F0-9]{64}"}
+                    required
+                    value={txid}
+                    onChange={(event) => setTxid(event.target.value)}
+                  />
                   <button className="button shrink-0" disabled={lookup.isPending}><Search size={16} />{lookup.isPending ? "Looking up..." : "Lookup"}</button>
                 </form>
                 {transaction && (
                   <div className="mt-5 rounded-xl border border-slate-700/80 bg-[#0b141e] p-4">
                     <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-start">
-                      <div className="min-w-0"><p className="label">Transaction</p><p className="mt-1 break-all font-mono text-xs text-sky-200">{transaction.txid}</p></div>
-                      <StatusPill tone={transaction.is_confirmed ? "green" : "amber"}>{transaction.is_confirmed === null ? "Confirmation unknown" : transaction.is_confirmed ? "Confirmed" : "Unconfirmed"}</StatusPill>
+                      <div className="min-w-0"><p className="label">Transaction · {("tx_hash" in transaction) ? `Chain ID ${transaction.chain_id}` : "Bitcoin"}</p><p className="mt-1 break-all font-mono text-xs text-sky-200">{"tx_hash" in transaction ? transaction.tx_hash : transaction.txid}</p></div>
+                      {"tx_hash" in transaction ? (
+                        <StatusPill tone={transaction.receipt_status === "success" ? "green" : transaction.receipt_status === "reverted" ? "red" : "amber"}>
+                          {transaction.receipt_status ?? (transaction.block_number === null ? "Pending" : "Receipt unavailable")}
+                        </StatusPill>
+                      ) : (
+                        <StatusPill tone={transaction.is_confirmed ? "green" : "amber"}>{transaction.is_confirmed === null ? "Confirmation unknown" : transaction.is_confirmed ? "Confirmed" : "Unconfirmed"}</StatusPill>
+                      )}
                     </div>
-                    <div className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
-                      <DataCell label="Network" value={transaction.network} />
-                      <DataCell label="Block height" value={transaction.block_height?.toLocaleString() ?? "Pending"} />
-                      <DataCell label="Inputs / outputs" value={`${transaction.input_count} / ${transaction.output_count}`} />
-                      <DataCell label="Provider" value={transaction.source} />
-                    </div>
-                    <button className="button secondary mt-4" onClick={() => analyze.mutate(transaction.txid)} disabled={analyze.isPending}>
-                      <Activity size={15} />{analyze.isPending ? "Analyzing..." : "Analyze risk indicators"}
-                    </button>
+                    {"tx_hash" in transaction ? (
+                      <>
+                        <div className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-3">
+                          <DataCell label="Block number" value={transaction.block_number?.toLocaleString() ?? "Pending"} />
+                          <DataCell label="Value" value={`${transaction.value_wei} wei`} />
+                          <DataCell label="From" value={transaction.from_address} />
+                          <DataCell label="To" value={transaction.to_address ?? "Contract creation"} />
+                          <DataCell label="Gas used / limit" value={`${transaction.gas_used?.toLocaleString() ?? "Pending"} / ${transaction.gas_limit.toLocaleString()}`} />
+                          <DataCell label="Provider" value={transaction.source} />
+                        </div>
+                        <p className="mt-3 text-xs text-slate-500">Ethereum risk scoring and case linking are not yet available. Values remain in wei and are not Bitcoin satoshis.</p>
+                      </>
+                    ) : (
+                      <>
+                        <div className="mt-4 grid grid-cols-2 gap-3 text-sm sm:grid-cols-4">
+                          <DataCell label="Network" value={transaction.network} />
+                          <DataCell label="Block height" value={transaction.block_height?.toLocaleString() ?? "Pending"} />
+                          <DataCell label="Inputs / outputs" value={`${transaction.input_count} / ${transaction.output_count}`} />
+                          <DataCell label="Provider" value={transaction.source} />
+                        </div>
+                        <button className="button secondary mt-4" onClick={() => analyze.mutate(transaction.txid)} disabled={analyze.isPending}>
+                          <Activity size={15} />{analyze.isPending ? "Analyzing..." : "Analyze risk indicators"}
+                        </button>
+                      </>
+                    )}
                   </div>
                 )}
                 {risk && (
@@ -299,7 +347,7 @@ export default function DashboardPage() {
                             <td className="py-3 pr-4">{item.is_confirmed === null ? <StatusPill tone="blue">Unknown</StatusPill> : item.is_confirmed ? <StatusPill tone="green">Confirmed</StatusPill> : <StatusPill tone="amber">Unconfirmed</StatusPill>}</td>
                             <td className="py-3 pr-4 text-slate-400">{item.block_height?.toLocaleString() ?? "Pending"}</td>
                             <td className="py-3 pr-4 text-slate-400">{item.output_count}</td>
-                            <td className="py-3 text-right"><button type="button" className="text-xs text-sky-300 hover:text-sky-200" onClick={() => { setTxid(item.txid); lookup.mutate(item.txid); }}>Inspect</button></td>
+                            <td className="py-3 text-right"><button type="button" className="text-xs text-sky-300 hover:text-sky-200" onClick={() => { setLookupNetwork("bitcoin"); setTxid(item.txid); lookup.mutate({ txHash: item.txid, network: "bitcoin" }); }}>Inspect</button></td>
                           </tr>)}
                         </tbody>
                       </table>

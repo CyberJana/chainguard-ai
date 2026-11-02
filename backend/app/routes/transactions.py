@@ -12,13 +12,19 @@ from app.dependencies import CurrentUser
 from app.models import Alert, AuditLog, BlockchainTransaction, EthereumTransaction, RiskAssessment
 from app.schemas import (
     BitcoinAddressHistoryResponse,
+    EthereumAddressSnapshotResponse,
     EthereumTransactionResponse,
     RiskRequest,
     RiskResponse,
     TransactionResponse,
 )
 from app.services.bitcoin import fetch_bitcoin_address_history, ingest_bitcoin_transaction
-from app.services.ethereum import TX_HASH_PATTERN as ETHEREUM_TX_HASH_PATTERN, ingest_ethereum_transaction
+from app.services.ethereum import (
+    ADDRESS_PATTERN as ETHEREUM_ADDRESS_PATTERN,
+    TX_HASH_PATTERN as ETHEREUM_TX_HASH_PATTERN,
+    fetch_ethereum_address_snapshot,
+    ingest_ethereum_transaction,
+)
 from app.services.risk import MODEL_VERSION, assess_bitcoin_transaction
 
 router = APIRouter(prefix="/api/v1", tags=["blockchain"])
@@ -82,6 +88,30 @@ def lookup_ethereum_transaction(
     db.commit()
     db.refresh(transaction)
     return transaction
+
+
+@router.get("/addresses/ethereum/{address}", response_model=EthereumAddressSnapshotResponse)
+def lookup_ethereum_address(
+    address: str,
+    user: CurrentUser,
+    db: DbSession,
+) -> EthereumAddressSnapshotResponse:
+    if not ETHEREUM_ADDRESS_PATTERN.fullmatch(address):
+        raise HTTPException(status_code=422, detail="Invalid Ethereum address")
+    snapshot = fetch_ethereum_address_snapshot(address)
+    db.add(
+        AuditLog(
+            organization_id=user.organization_id,
+            user_id=user.id,
+            event_type="address.lookup",
+            details=(
+                f"ethereum:{snapshot['chain_id']}:{snapshot['address']}; "
+                f"block={snapshot['block_number']}; source={snapshot['source']}"
+            ),
+        )
+    )
+    db.commit()
+    return EthereumAddressSnapshotResponse.model_validate(snapshot)
 
 
 @router.get("/addresses/bitcoin/{address}", response_model=BitcoinAddressHistoryResponse)

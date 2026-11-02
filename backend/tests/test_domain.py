@@ -458,6 +458,99 @@ def test_ethereum_provider_fetch_uses_validated_json_rpc_envelopes(monkeypatch: 
     assert error.value.status_code == 502
 
 
+def test_ethereum_address_snapshot_pins_balance_and_nonce_to_latest_block(monkeypatch: pytest.MonkeyPatch) -> None:
+    import json
+    import app.services.ethereum as ethereum
+
+    address = "0x" + "b" * 40
+    block_hash = "0x" + "c" * 64
+    results = {
+        "eth_chainId": "0x1",
+        "eth_getBlockByNumber": {"number": "0x1234", "hash": block_hash},
+        "eth_getBalance": "0xde0b6b3a7640000",
+        "eth_getTransactionCount": "0x2a",
+    }
+    calls = []
+
+    class FakeResponse:
+        status_code = 200
+        headers = {}
+
+        def __init__(self, body: dict) -> None:
+            self.content = json.dumps(body).encode()
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return None
+
+        def iter_bytes(self):
+            return iter((self.content,))
+
+    class FakeClient:
+        def __init__(self, **kwargs) -> None:
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc_value, traceback):
+            return None
+
+        def stream(self, method: str, url: str, json: dict, headers: dict) -> FakeResponse:
+            calls.append(json)
+            return FakeResponse({"jsonrpc": "2.0", "id": 1, "result": results[json["method"]]})
+
+    monkeypatch.setattr(ethereum.settings, "ethereum_provider_url", "https://rpc.example/api")
+    monkeypatch.setattr(ethereum.httpx, "Client", FakeClient)
+    snapshot = ethereum.fetch_ethereum_address_snapshot(address)
+    assert snapshot["chain_id"] == 1
+    assert snapshot["address"] == address
+    assert snapshot["balance_wei"] == "1000000000000000000"
+    assert snapshot["transaction_count"] == 42
+    assert snapshot["block_number"] == 0x1234
+    assert snapshot["block_hash"] == block_hash
+    assert snapshot["source"] == "rpc.example"
+    assert calls[2]["params"] == [address, "0x1234"]
+    assert calls[3]["params"] == [address, "0x1234"]
+    results["eth_chainId"] = "invalid"
+    with pytest.raises(HTTPException) as error:
+        ethereum.fetch_ethereum_address_snapshot(address)
+    assert error.value.status_code == 502
+
+
+def test_ethereum_address_snapshot_api_validates_and_audits(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    import app.routes.transactions as transaction_routes
+
+    address = "0x" + "b" * 40
+    monkeypatch.setattr(
+        transaction_routes,
+        "fetch_ethereum_address_snapshot",
+        lambda requested: {
+            "chain_id": 1,
+            "address": requested.lower(),
+            "balance_wei": "1000",
+            "transaction_count": 3,
+            "block_number": 10,
+            "block_hash": "0x" + "c" * 64,
+            "source": "rpc.example",
+            "retrieved_at": datetime.now(timezone.utc),
+        },
+    )
+    headers = {"Authorization": f"Bearer {token_for(client)}"}
+    response = client.get(f"/api/v1/addresses/ethereum/{address}", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["balance_wei"] == "1000"
+    assert response.json()["transaction_count"] == 3
+    invalid = client.get("/api/v1/addresses/ethereum/not-an-address", headers=headers)
+    assert invalid.status_code == 422
+    with TestSession() as db:
+        audit = db.scalar(select(AuditLog).where(AuditLog.event_type == "address.lookup"))
+        assert audit is not None
+        assert audit.details == f"ethereum:1:{address}; block=10; source=rpc.example"
+
+
 def test_heuristic_risk_is_explicitly_uncalibrated() -> None:
     result = assess_bitcoin_transaction(
         {

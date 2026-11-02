@@ -68,6 +68,17 @@ class EthereumTransactionResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
 
+class EthereumAddressSnapshotResponse(BaseModel):
+    chain_id: int
+    address: str
+    balance_wei: str
+    transaction_count: int
+    block_number: int
+    block_hash: str
+    source: str
+    retrieved_at: datetime
+
+
 class BitcoinAddressStatsResponse(BaseModel):
     funded_txo_count: int
     funded_txo_sum: int

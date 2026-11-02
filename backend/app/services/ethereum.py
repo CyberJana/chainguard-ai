@@ -207,6 +207,63 @@ def fetch_ethereum_transaction(tx_hash: str) -> tuple[dict[str, Any], str]:
     return payload, hostname
 
 
+def fetch_ethereum_address_snapshot(address: str) -> dict[str, Any]:
+    if not isinstance(address, str) or not ADDRESS_PATTERN.fullmatch(address):
+        raise HTTPException(status_code=422, detail="Invalid Ethereum address")
+    if settings.ethereum_provider_url is None:
+        raise HTTPException(status_code=503, detail="Ethereum lookup is not configured")
+    provider_url = settings.ethereum_provider_url
+
+    try:
+        with httpx.Client(
+            timeout=settings.ethereum_provider_timeout_seconds,
+            follow_redirects=False,
+        ) as client:
+            chain_id = _quantity(_rpc_request(client, provider_url, "eth_chainId", []), "chain ID")
+            latest_block = _rpc_request(client, provider_url, "eth_getBlockByNumber", ["latest", False])
+            if not isinstance(latest_block, dict):
+                raise HTTPException(status_code=502, detail="Ethereum provider returned an invalid latest block")
+            block_number = _quantity(latest_block.get("number"), "latest block number")
+            block_hash = latest_block.get("hash")
+            if (
+                block_number is None
+                or block_number > MAX_DATABASE_INTEGER
+                or not isinstance(block_hash, str)
+                or not re.fullmatch(r"0x[0-9a-fA-F]{64}", block_hash)
+            ):
+                raise HTTPException(status_code=502, detail="Ethereum provider returned an invalid latest block")
+            block_tag = hex(block_number)
+            balance = _quantity(
+                _rpc_request(client, provider_url, "eth_getBalance", [address.lower(), block_tag]),
+                "account balance",
+            )
+            transaction_count = _quantity(
+                _rpc_request(client, provider_url, "eth_getTransactionCount", [address.lower(), block_tag]),
+                "account transaction count",
+            )
+    except HTTPException:
+        raise
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail="Configured Ethereum provider returned invalid address data") from exc
+    except httpx.TransportError as exc:
+        raise HTTPException(status_code=502, detail="Configured Ethereum provider is unavailable") from exc
+
+    if chain_id is None or chain_id > MAX_DATABASE_INTEGER or balance is None or transaction_count is None:
+        raise HTTPException(status_code=502, detail="Configured Ethereum provider returned invalid address data")
+    if transaction_count > MAX_DATABASE_INTEGER:
+        raise HTTPException(status_code=502, detail="Ethereum account transaction count is outside the supported range")
+    return {
+        "chain_id": chain_id,
+        "address": address.lower(),
+        "balance_wei": str(balance),
+        "transaction_count": transaction_count,
+        "block_number": block_number,
+        "block_hash": block_hash.lower(),
+        "source": urlparse(provider_url).hostname or "configured-provider",
+        "retrieved_at": datetime.now(timezone.utc),
+    }
+
+
 def ingest_ethereum_transaction(db: Session, tx_hash: str) -> EthereumTransaction:
     payload, source = fetch_ethereum_transaction(tx_hash)
     normalized = normalize_ethereum_transaction(

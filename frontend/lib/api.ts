@@ -87,6 +87,17 @@ export type EthereumTransaction = {
   updated_at: string;
 };
 
+export type EthereumAddressSnapshot = {
+  chain_id: number;
+  address: string;
+  balance_wei: string;
+  transaction_count: number;
+  block_number: number;
+  block_hash: string;
+  source: string;
+  retrieved_at: string;
+};
+
 export type BitcoinAddressStats = {
   funded_txo_count: number;
   funded_txo_sum: number;
@@ -170,6 +181,8 @@ export const api = {
       `/api/proxy/addresses/bitcoin/${encodeURIComponent(address)}${query}`,
     );
   },
+  lookupEthereumAddress: (address: string) =>
+    request<EthereumAddressSnapshot>(`/api/proxy/addresses/ethereum/${encodeURIComponent(address)}`),
   analyze: (txid: string) =>
     request<RiskAssessment>("/api/proxy/risk/analyze", { method: "POST", body: JSON.stringify({ txid }) }),
   createCase: (title: string) =>

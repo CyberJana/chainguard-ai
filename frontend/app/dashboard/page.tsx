@@ -10,7 +10,7 @@ import {
 import {
   Cell, Pie, PieChart, ResponsiveContainer, Tooltip,
 } from "recharts";
-import { Alert, AlertFilters, ApiError, api, BitcoinAddressHistory, CaseRecord, errorMessage, EthereumTransaction, RiskAssessment, Transaction } from "@/lib/api";
+import { Alert, AlertFilters, ApiError, api, BitcoinAddressHistory, CaseRecord, errorMessage, EthereumAddressSnapshot, EthereumTransaction, RiskAssessment, Transaction } from "@/lib/api";
 import type { FormEvent, ReactNode } from "react";
 
 const PIE_COLORS: Record<Alert["severity"], string> = {
@@ -45,6 +45,8 @@ export default function DashboardPage() {
   const [transaction, setTransaction] = useState<Transaction | EthereumTransaction | null>(null);
   const [address, setAddress] = useState("");
   const [addressHistory, setAddressHistory] = useState<BitcoinAddressHistory | null>(null);
+  const [ethereumAddress, setEthereumAddress] = useState("");
+  const [ethereumAddressSnapshot, setEthereumAddressSnapshot] = useState<EthereumAddressSnapshot | null>(null);
   const [risk, setRisk] = useState<RiskAssessment | null>(null);
   const [caseTitle, setCaseTitle] = useState("");
   const [notice, setNotice] = useState("");
@@ -96,6 +98,17 @@ export default function DashboardPage() {
       setNotice("");
     },
     onError: (error) => setNotice(errorMessage(error)),
+  });
+  const lookupEthereumWallet = useMutation({
+    mutationFn: api.lookupEthereumAddress,
+    onSuccess: (result) => {
+      setEthereumAddressSnapshot(result);
+      setNotice("");
+    },
+    onError: (error) => {
+      setEthereumAddressSnapshot(null);
+      setNotice(errorMessage(error));
+    },
   });
   const analyze = useMutation({
     mutationFn: api.analyze,
@@ -149,6 +162,13 @@ export default function DashboardPage() {
     setNotice("");
     setAddressHistory(null);
     lookupAddress.mutate({ address: address.trim() });
+  }
+
+  async function submitEthereumAddressLookup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setNotice("");
+    setEthereumAddressSnapshot(null);
+    lookupEthereumWallet.mutate(ethereumAddress.trim());
   }
 
   async function signOut() {
@@ -355,6 +375,47 @@ export default function DashboardPage() {
                     {addressHistory.transactions.length === 0 && <p className="py-4 text-center text-sm text-slate-500">No recent transactions returned by the provider.</p>}
                     {addressHistory.next_cursor && <button className="button secondary mt-4" disabled={lookupAddress.isPending} onClick={() => lookupAddress.mutate({ address: addressHistory.address, cursor: addressHistory.next_cursor ?? undefined })}>{lookupAddress.isPending ? "Loading..." : "Load older transactions"}</button>}
                     <p className="mt-3 text-xs text-slate-500">Address history is fetched live from the configured provider. Mempool activity is shown separately from confirmed chain totals.</p>
+                  </div>
+                )}
+              </Card>
+            </section>
+
+            <section id="ethereum-address">
+              <Card>
+                <div className="mb-5 flex items-center justify-between">
+                  <div><p className="label">Ethereum account snapshot</p><h2 className="mt-1 text-lg font-semibold">Balance and transaction count</h2></div>
+                  <Search className="text-slate-500" size={19} />
+                </div>
+                <form onSubmit={submitEthereumAddressLookup} className="flex flex-col gap-3 sm:flex-row">
+                  <label className="sr-only" htmlFor="ethereum-address-input">Ethereum account address</label>
+                  <input
+                    id="ethereum-address-input"
+                    className="field min-w-0 flex-1 font-mono text-sm"
+                    placeholder="0x followed by 40 hexadecimal characters"
+                    minLength={42}
+                    maxLength={42}
+                    pattern="0x[a-fA-F0-9]{40}"
+                    required
+                    value={ethereumAddress}
+                    onChange={(event) => setEthereumAddress(event.target.value)}
+                  />
+                  <button className="button shrink-0" disabled={lookupEthereumWallet.isPending}>
+                    <Search size={16} />{lookupEthereumWallet.isPending ? "Looking up..." : "Get account snapshot"}
+                  </button>
+                </form>
+                {ethereumAddressSnapshot && (
+                  <div className="mt-5 rounded-xl border border-slate-700/80 bg-[#0b141e] p-4">
+                    <div className="flex flex-col justify-between gap-3 sm:flex-row sm:items-center">
+                      <p className="break-all font-mono text-xs text-sky-200">{ethereumAddressSnapshot.address} · Chain ID {ethereumAddressSnapshot.chain_id}</p>
+                      <p className="text-xs text-slate-500">Source: {ethereumAddressSnapshot.source} · Retrieved {new Date(ethereumAddressSnapshot.retrieved_at).toLocaleString()}</p>
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      <DataCell label="Balance at block" value={`${ethereumAddressSnapshot.balance_wei} wei · #${ethereumAddressSnapshot.block_number.toLocaleString()}`} />
+                      <DataCell label="Transaction count at block" value={ethereumAddressSnapshot.transaction_count.toLocaleString()} />
+                      <DataCell label="Block hash" value={ethereumAddressSnapshot.block_hash} />
+                      <DataCell label="Network" value={`Ethereum chain ${ethereumAddressSnapshot.chain_id}`} />
+                    </div>
+                    <p className="mt-3 text-xs text-slate-500">This is a provider-reported account snapshot pinned to one block, not transaction history or proof of account ownership. Values remain in wei.</p>
                   </div>
                 )}
               </Card>

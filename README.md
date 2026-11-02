@@ -11,7 +11,7 @@ ChainGuard AI is planned as a blockchain transaction monitoring, risk triage, an
 - Analyst-managed alerts, investigations, evidence provenance, chain of custody, and reports.
 - Organization-scoped access controls, audit trails, and operational monitoring.
 
-The Bitcoin adapter uses a configured HTTPS API compatible with mempool.space to retrieve individual transactions and paginated address history. Individual transaction payloads are persisted as distinct observations; address-history pages are validated and returned live with provider provenance, but are not persisted. Ethereum supports read-only transaction/receipt lookup through an optional configured HTTPS JSON-RPC endpoint. Ethereum observations use separate persistence and retain native wei/gas values and chain IDs; Ethereum risk scoring, address history, case linking, graphing, and block ingestion are not implemented. An offline, reproducible Isolation Forest training/evaluation pipeline is available for operator-supplied, labeled data; no real-world dataset has been trained or evaluated, the model is not connected to API scoring, and scores are not calibrated. Block ingestion, reorganization orchestration, streaming ingestion, and external threat-intelligence integrations remain future work. The deployed Bitcoin rule score is explicitly uncalibrated and must not be interpreted as a fraud probability.
+The Bitcoin adapter uses a configured HTTPS API compatible with mempool.space to retrieve individual transactions and paginated address history. Individual transaction payloads are persisted as distinct observations; address-history pages are validated and returned live with provider provenance, but are not persisted. Ethereum supports read-only transaction/receipt lookup and a live address snapshot (native balance and transaction count pinned to one latest block) through an optional configured HTTPS JSON-RPC endpoint. Ethereum observations use separate persistence and retain native wei/gas values and chain IDs; Ethereum transaction history, risk scoring, case linking, graphing, and block ingestion are not implemented. An offline, reproducible Isolation Forest training/evaluation pipeline is available for operator-supplied, labeled data; no real-world dataset has been trained or evaluated, the model is not connected to API scoring, and scores are not calibrated. Block ingestion, reorganization orchestration, streaming ingestion, and external threat-intelligence integrations remain future work. The deployed Bitcoin rule score is explicitly uncalibrated and must not be interpreted as a fraud probability.
 
 The planned system boundaries, trust assumptions, and project layout are described in [docs/architecture.md](docs/architecture.md). These are design targets, not claims about implemented controls.
 
@@ -74,6 +74,7 @@ The authenticated API currently also exposes:
 | `GET /api/v1/transactions` | Paginated stored public transaction observations |
 | `GET /api/v1/transactions/bitcoin/{txid}` | Fetch and persist a transaction from the configured provider |
 | `GET /api/v1/transactions/ethereum/{tx_hash}` | Fetch Ethereum transaction and receipt via optional configured JSON-RPC provider |
+| `GET /api/v1/addresses/ethereum/{address}` | Fetch a provider-reported balance and transaction-count snapshot pinned to one latest block |
 | `GET /api/v1/addresses/bitcoin/{address}` | Fetch live address totals and a 25-transaction history page; pass `cursor` for older pages |
 | `POST /api/v1/risk/analyze` | Analyze an ingested transaction using explicitly uncalibrated rules |
 | `GET /api/v1/alerts` / `PATCH /api/v1/alerts/{id}` | Organization-scoped alert triage; filter by status, severity, network, assignee, and timezone-aware creation range |
@@ -130,11 +131,11 @@ npm install
 npm run dev
 ```
 
-Set `BACKEND_API_URL=http://127.0.0.1:8000` in `frontend/.env.local` when launching Next.js from the host. Sign-in is proxied through Next.js, and the opaque API token is held in an HttpOnly, SameSite=Strict cookie rather than browser storage. The UI currently covers login, Bitcoin transaction lookup/risk, Ethereum transaction lookup, alert triage, case creation/details, notes, evidence upload/download, JSON/CSV report export, and interactive case-scoped Bitcoin graph exploration.
+Set `BACKEND_API_URL=http://127.0.0.1:8000` in `frontend/.env.local` when launching Next.js from the host. Sign-in is proxied through Next.js, and the opaque API token is held in an HttpOnly, SameSite=Strict cookie rather than browser storage. The UI currently covers login, Bitcoin transaction lookup/risk and address history, Ethereum transaction lookup and account snapshots, alert triage, case creation/details, notes, evidence upload/download, JSON/CSV report export, and interactive case-scoped Bitcoin graph exploration.
 
 ### Configuration
 
-`.env.example` documents the variables used by `docker-compose.yml`. Copy it to `.env`; `.env` is ignored by Git. Set `ETHEREUM_PROVIDER_URL` to a trusted HTTPS JSON-RPC endpoint to enable Ethereum transaction lookup; the endpoint may contain provider credentials only in the ignored local `.env`, not in `.env.example`. Never put production credentials, wallet secrets, or real case data in the example file.
+`.env.example` documents the variables used by `docker-compose.yml`. Copy it to `.env`; `.env` is ignored by Git. Set `ETHEREUM_PROVIDER_URL` to a trusted HTTPS JSON-RPC endpoint to enable Ethereum transaction and account snapshot lookups; the endpoint may contain provider credentials only in the ignored local `.env`, not in `.env.example`. Never put production credentials, wallet secrets, or real case data in the example file.
 
 ## Repository layout
 
@@ -161,7 +162,7 @@ Work is staged to keep each layer reviewable and verifiable:
 5. Alerts, cases, notes, transaction links, evidence hashing/custody, and case reports — **initial APIs implemented; alert filters cover network, status, severity, assignment, and creation time; JSON and CSV reports include provenance and custody records; PDF reports, notifications, and supervisory review remain**.
 6. Next.js dashboard and transaction explorer — **initial API-connected dashboard, case details, and case-scoped interactive graph implemented; remaining analyst modules remain**.
 7. Graph exploration — **initial case-scoped Bitcoin graph implemented from already-linked raw observations, with bounded output, audited access, and no ownership/identity attribution; multi-hop exploration and Ethereum remain**.
-8. Ethereum and reviewed threat-intelligence integrations — **Ethereum transaction/receipt lookup is implemented behind an optional configured JSON-RPC endpoint with distinct wei/gas persistence and source observations; Ethereum risk/case/address workflows and threat intelligence remain**.
+8. Ethereum and reviewed threat-intelligence integrations — **Ethereum transaction/receipt lookup and a latest-block-pinned account balance/nonce snapshot are implemented behind an optional configured JSON-RPC endpoint; wei/gas units and provider provenance are retained; transaction history, Ethereum risk/case/graph workflows, and threat intelligence remain**.
 9. Automated testing, security hardening, observability, and performance work — **focused tests and CI added; runtime checks and broader coverage remain**.
 10. Deployment preparation and operational documentation — **local Compose setup only; production deployment and backup/restore remain**.
 

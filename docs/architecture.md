@@ -21,6 +21,8 @@ Bitcoin transaction data is retrieved from the configured HTTPS provider adapter
 
 Ethereum receipt status is preserved as `success`, `reverted`, or unknown when the receipt is not yet available. Transaction value and gas price are stored as decimal strings in wei to avoid 64-bit overflow; gas counts and chain/block numbers use bounded signed 64-bit database integers. Ethereum lookups do not yet support address history, case linking, graphing, risk scoring, or reorganization-aware block ingestion.
 
+Ethereum address lookup requests the latest block first and uses that explicit block number for both `eth_getBalance` and `eth_getTransactionCount`, returning the block number/hash, chain ID, source, and retrieval time. The snapshot is consistent to the provider's reported block but is not transaction history, proof of address control, or an independently verified chain state. Account history and token balances remain unsupported.
+
 Alert listing supports server-side filters for status, severity, network, assigned or unassigned state, assignee ID, and a timezone-aware creation-time range. The organization predicate is always applied independently of optional client filters; pagination remains bounded.
 
 JSON and CSV case reports use the same tenant-scoped report data, include provider observations, analyst notes, evidence hashes/provenance, activity, and chain-of-custody events, and record export format in the audit log. CSV cells beginning with spreadsheet formula characters are prefixed to reduce formula-injection risk; CSV is a convenience export, not a signed or tamper-evident forensic package.
